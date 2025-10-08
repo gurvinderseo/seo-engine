@@ -12,14 +12,15 @@ app = FastAPI(title="SEO Engine API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://seo-engine.vercel.app",
-        "http://localhost:3000",
-        "https://seo-engine.onrender.com"
+        "https://seo-engine-gold.vercel.app",  # ✅ Add your actual frontend
+        "http://localhost:3000",               # local dev
+        "https://seo-engine.onrender.com"      # backend can call itself if needed
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # Temporary storage for OAuth states (use Redis in production)
 oauth_states = {}
