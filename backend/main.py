@@ -183,31 +183,26 @@ async def connect_gsc():
     }
 
 # OAuth callback
+# OAuth callback - UPDATED VERSION
 @app.get("/api/connect/callback")
 async def oauth_callback(code: str = None, state: str = None, error: str = None):
     """Handle OAuth callback from Google"""
     
-    # Check for errors
     if error:
-        return JSONResponse(
-            status_code=400,
-            content={"error": f"Google OAuth error: {error}"}
+        # Redirect to frontend with error
+        return RedirectResponse(
+            url=f"https://seo-engine-gold.vercel.app/?oauth_error={error}"
         )
     
     if not code:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "No authorization code received from Google"}
+        return RedirectResponse(
+            url="https://seo-engine-gold.vercel.app/?oauth_error=no_code"
         )
     
-    # Validate state (CSRF protection)
+    # Validate state
     if state and state not in oauth_states:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": "Invalid state parameter",
-                "hint": "Start OAuth flow again from /api/connect"
-            }
+        return RedirectResponse(
+            url="https://seo-engine-gold.vercel.app/?oauth_error=invalid_state"
         )
     
     # Remove used state
@@ -231,40 +226,63 @@ async def oauth_callback(code: str = None, state: str = None, error: str = None)
             )
             
             if token_response.status_code != 200:
-                return JSONResponse(
-                    status_code=token_response.status_code,
-                    content={
-                        "error": "Token exchange failed",
-                        "status_code": token_response.status_code,
-                        "details": token_response.text,
-                        "hint": "Check GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Render"
-                    }
+                return RedirectResponse(
+                    url=f"https://seo-engine-gold.vercel.app/?oauth_error=token_exchange_failed"
                 )
             
             tokens = token_response.json()
             
-            # SUCCESS! Return tokens (in production, save to database)
-                        # SUCCESS! Redirect user back to frontend instead of showing JSON
-            frontend_url = os.getenv("FRONTEND_URL", "https://seo-engine-gold.vercel.app")
-            return RedirectResponse(url=f"{frontend_url}/?oauth_success=1")
-
+            # Store tokens in database
+            if DATABASE_URL:
+                try:
+                    import psycopg2
+                    from psycopg2.extras import Json
+                    
+                    conn = psycopg2.connect(DATABASE_URL)
+                    cur = conn.cursor()
+                    
+                    # Store in connectors table
+                    cur.execute("""
+                        INSERT INTO connectors (site_id, type, credentials_meta, status)
+                        VALUES (%s, %s, %s, %s)
+                        RETURNING id
+                    """, (
+                        None,  # site_id will be set later when user adds site
+                        'gsc',
+                        Json({
+                            'access_token': tokens.get('access_token'),
+                            'refresh_token': tokens.get('refresh_token'),
+                            'token_expiry': tokens.get('expires_in'),
+                            'scopes': tokens.get('scope', '').split()
+                        }),
+                        'active'
+                    ))
+                    
+                    connector_id = cur.fetchone()[0]
+                    conn.commit()
+                    cur.close()
+                    conn.close()
+                    
+                    # Success! Redirect to frontend with success flag
+                    return RedirectResponse(
+                        url=f"https://seo-engine-gold.vercel.app/?oauth_success=true&connector_id={connector_id}"
+                    )
+                    
+                except Exception as db_error:
+                    print(f"Database error: {db_error}")
+                    # Still redirect with success but note DB issue
+                    return RedirectResponse(
+                        url=f"https://seo-engine-gold.vercel.app/?oauth_success=true&db_warning=true"
+                    )
+            else:
+                # No database configured, but OAuth worked
+                return RedirectResponse(
+                    url="https://seo-engine-gold.vercel.app/?oauth_success=true&no_db=true"
+                )
             
-    except httpx.TimeoutException:
-        return JSONResponse(
-            status_code=504,
-            content={
-                "error": "Request to Google timed out",
-                "hint": "Try again in a few seconds"
-            }
-        )
     except Exception as e:
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "Exception during token exchange",
-                "details": str(e),
-                "type": type(e).__name__
-            }
+        return RedirectResponse(
+            url=f"https://seo-engine-gold.vercel.app/?oauth_error=exception"
         )
 
 # Run with: uvicorn main:app --host 0.0.0.0 --port $PORT
