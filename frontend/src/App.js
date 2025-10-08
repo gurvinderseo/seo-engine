@@ -5,7 +5,16 @@ function App() {
   const [backendStatus, setBackendStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-
+ // Handle redirect after OAuth
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("oauth_success")) {
+      alert("✅ Successfully connected to Google!");
+      // Clean URL so query param is removed
+      window.history.replaceState({}, document.title, "/");
+      // Optional: call backend to fetch/store tokens or update UI
+    }
+  }, []);
   // Backend URL - NO trailing slash
   const API_URL = 'https://seo-engine.onrender.com';
 
