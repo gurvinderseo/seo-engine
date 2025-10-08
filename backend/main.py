@@ -244,22 +244,10 @@ async def oauth_callback(code: str = None, state: str = None, error: str = None)
             tokens = token_response.json()
             
             # SUCCESS! Return tokens (in production, save to database)
-            return {
-                "success": True,
-                "message": "✅ Successfully authenticated with Google!",
-                "token_info": {
-                    "access_token": tokens.get("access_token")[:20] + "..." if tokens.get("access_token") else None,
-                    "token_type": tokens.get("token_type"),
-                    "expires_in": tokens.get("expires_in"),
-                    "has_refresh_token": "refresh_token" in tokens,
-                    "scopes": tokens.get("scope", "").split()
-                },
-                "next_steps": [
-                    "Store tokens in database",
-                    "Use access_token to call GSC/GA4 APIs",
-                    "Implement token refresh logic"
-                ]
-            }
+                        # SUCCESS! Redirect user back to frontend instead of showing JSON
+            frontend_url = os.getenv("FRONTEND_URL", "https://seo-engine-gold.vercel.app")
+            return RedirectResponse(url=f"{frontend_url}/?oauth_success=1")
+
             
     except httpx.TimeoutException:
         return JSONResponse(
