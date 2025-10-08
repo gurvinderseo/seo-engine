@@ -552,25 +552,3 @@ async def get_gsc_data(site_id: int):
         
     except Exception as e:
         return {"error": str(e)}
-@app.delete("/api/sites/{site_id}")
-async def delete_site(site_id: int):
-    if not DATABASE_URL:
-        return {"error": "Database not configured"}
-
-    try:
-        import psycopg2
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
-
-        # First delete related GSC data
-        cur.execute("DELETE FROM gsc_metrics WHERE site_id = %s", (site_id,))
-        # Then delete the site
-        cur.execute("DELETE FROM sites WHERE id = %s", (site_id,))
-
-        conn.commit()
-        cur.close()
-        conn.close()
-        return {"success": True, "message": "Site deleted successfully"}
-
-    except Exception as e:
-        return {"error": str(e)}
