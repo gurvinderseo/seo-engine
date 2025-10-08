@@ -301,20 +301,33 @@ async def create_site(site_data: dict):
         cur = conn.cursor()
         
         # Insert site (owner_id = 1 for now, will add proper auth later)
-        cur.execute("""
-            INSERT INTO sites (owner_id, domain, sitemap_url, created_at)
-            VALUES (%s, %s, %s, NOW())
-            RETURNING id, domain, sitemap_url, created_at
-        """, (
-            1,  # Default user
-            site_data.get('domain'),
-            site_data.get('sitemap_url')
-        ))
-        
-        site = cur.fetchone()
-        conn.commit()
-        cur.close()
-        conn.close()
+        # Store tokens in connectors table (upsert)
+cur.execute("""
+    INSERT INTO connectors (site_id, type, credentials_meta, status)
+    VALUES (%s, %s, %s, %s)
+    ON CONFLICT (type) 
+    DO UPDATE SET 
+        credentials_meta = EXCLUDED.credentials_meta,
+        status = EXCLUDED.status,
+        updated_at = NOW()
+    RETURNING id
+""", (
+    None,  # site_id will be set later when user adds site
+    'gsc',
+    Json({
+        'access_token': tokens.get('access_token'),
+        'refresh_token': tokens.get('refresh_token'),  # sometimes may be None
+        'token_expiry': tokens.get('expires_in'),
+        'scopes': tokens.get('scope', '').split()
+    }),
+    'active'
+))
+
+connector_id = cur.fetchone()[0]
+conn.commit()
+cur.close()
+conn.close()
+
         
         return {
             "success": True,
