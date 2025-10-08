@@ -286,3 +286,256 @@ async def oauth_callback(code: str = None, state: str = None, error: str = None)
         )
 
 # Run with: uvicorn main:app --host 0.0.0.0 --port $PORT
+# ==================== SITES MANAGEMENT ====================
+
+@app.post("/api/sites")
+async def create_site(site_data: dict):
+    """Create a new site"""
+    if not DATABASE_URL:
+        return {"error": "Database not configured"}
+    
+    try:
+        import psycopg2
+        
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        
+        # Insert site (owner_id = 1 for now, will add proper auth later)
+        cur.execute("""
+            INSERT INTO sites (owner_id, domain, sitemap_url, created_at)
+            VALUES (%s, %s, %s, NOW())
+            RETURNING id, domain, sitemap_url, created_at
+        """, (
+            1,  # Default user
+            site_data.get('domain'),
+            site_data.get('sitemap_url')
+        ))
+        
+        site = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return {
+            "success": True,
+            "site": {
+                "id": site[0],
+                "domain": site[1],
+                "sitemap_url": site[2],
+                "created_at": site[3].isoformat()
+            }
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/sites")
+async def get_sites():
+    """Get all sites"""
+    if not DATABASE_URL:
+        return {"error": "Database not configured"}
+    
+    try:
+        import psycopg2
+        
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT id, domain, sitemap_url, created_at, last_scan_at
+            FROM sites
+            ORDER BY created_at DESC
+        """)
+        
+        sites = []
+        for row in cur.fetchall():
+            sites.append({
+                "id": row[0],
+                "domain": row[1],
+                "sitemap_url": row[2],
+                "created_at": row[3].isoformat() if row[3] else None,
+                "last_scan_at": row[4].isoformat() if row[4] else None
+            })
+        
+        cur.close()
+        conn.close()
+        
+        return {"sites": sites}
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+# ==================== GSC DATA FETCHING ====================
+
+@app.post("/api/fetch-gsc-data")
+async def fetch_gsc_data(request_data: dict):
+    """Fetch GSC data for a site"""
+    site_id = request_data.get('site_id')
+    
+    if not DATABASE_URL:
+        return {"error": "Database not configured"}
+    
+    try:
+        import psycopg2
+        from psycopg2.extras import Json
+        from datetime import datetime, timedelta
+        
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        
+        # Get site details
+        cur.execute("SELECT domain FROM sites WHERE id = %s", (site_id,))
+        site = cur.fetchone()
+        
+        if not site:
+            return {"error": "Site not found"}
+        
+        domain = site[0]
+        
+        # Get OAuth credentials
+        cur.execute("""
+            SELECT credentials_meta 
+            FROM connectors 
+            WHERE type = 'gsc' AND status = 'active'
+            ORDER BY created_at DESC
+            LIMIT 1
+        """)
+        
+        connector = cur.fetchone()
+        
+        if not connector:
+            return {"error": "No GSC connector found. Please connect Google account first."}
+        
+        credentials = connector[0]
+        access_token = credentials.get('access_token')
+        
+        if not access_token:
+            return {"error": "No access token found"}
+        
+        # Fetch data from GSC API
+        end_date = datetime.now().date()
+        start_date = end_date - timedelta(days=90)
+        
+        gsc_api_url = f"https://www.googleapis.com/webmasters/v3/sites/{domain}/searchAnalytics/query"
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                gsc_api_url,
+                json={
+                    "startDate": start_date.isoformat(),
+                    "endDate": end_date.isoformat(),
+                    "dimensions": ["page", "query"],
+                    "rowLimit": 1000
+                },
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json"
+                },
+                timeout=30.0
+            )
+            
+            if response.status_code != 200:
+                return {
+                    "error": "Failed to fetch GSC data",
+                    "details": response.text,
+                    "status_code": response.status_code
+                }
+            
+            gsc_data = response.json()
+            rows = gsc_data.get('rows', [])
+            
+            # Store in database
+            for row in rows:
+                keys = row.get('keys', [])
+                page_url = keys[0] if len(keys) > 0 else None
+                query = keys[1] if len(keys) > 1 else None
+                
+                impressions = row.get('impressions', 0)
+                clicks = row.get('clicks', 0)
+                ctr = row.get('ctr', 0.0)
+                position = row.get('position', 0.0)
+                
+                cur.execute("""
+                    INSERT INTO gsc_metrics 
+                    (site_id, url, query, impressions, clicks, ctr, position, date)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                """, (
+                    site_id,
+                    page_url,
+                    query,
+                    impressions,
+                    clicks,
+                    ctr,
+                    position,
+                    datetime.now()
+                ))
+            
+            conn.commit()
+            
+            # Update last_scan_at
+            cur.execute("""
+                UPDATE sites 
+                SET last_scan_at = NOW()
+                WHERE id = %s
+            """, (site_id,))
+            
+            conn.commit()
+            cur.close()
+            conn.close()
+            
+            return {
+                "success": True,
+                "rows_imported": len(rows),
+                "message": f"Successfully imported {len(rows)} rows from GSC"
+            }
+            
+    except Exception as e:
+        return {"error": str(e)}
+
+# ==================== GET GSC DATA ====================
+
+@app.get("/api/gsc-data/{site_id}")
+async def get_gsc_data(site_id: int):
+    """Get GSC data for a site"""
+    if not DATABASE_URL:
+        return {"error": "Database not configured"}
+    
+    try:
+        import psycopg2
+        
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        
+        # Get aggregated data
+        cur.execute("""
+            SELECT 
+                url,
+                SUM(impressions) as total_impressions,
+                SUM(clicks) as total_clicks,
+                AVG(ctr) as avg_ctr,
+                AVG(position) as avg_position
+            FROM gsc_metrics
+            WHERE site_id = %s
+            GROUP BY url
+            ORDER BY total_impressions DESC
+            LIMIT 100
+        """, (site_id,))
+        
+        pages = []
+        for row in cur.fetchall():
+            pages.append({
+                "url": row[0],
+                "impressions": int(row[1] or 0),
+                "clicks": int(row[2] or 0),
+                "ctr": float(row[3] or 0),
+                "position": float(row[4] or 0)
+            })
+        
+        cur.close()
+        conn.close()
+        
+        return {"pages": pages, "count": len(pages)}
+        
+    except Exception as e:
+        return {"error": str(e)}
