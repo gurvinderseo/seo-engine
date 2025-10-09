@@ -3,7 +3,7 @@ from fastapi.responses import RedirectResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 import os
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote_plus
 import secrets
 
 app = FastAPI(title="SEO Engine API")
@@ -12,17 +12,16 @@ app = FastAPI(title="SEO Engine API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://seo-engine-gold.vercel.app",  # ✅ Add your actual frontend
-        "http://localhost:3000",               # local dev
-        "https://seo-engine.onrender.com"      # backend can call itself if needed
+        "https://seo-engine-gold.vercel.app",
+        "http://localhost:3000",
+        "https://seo-engine.onrender.com"
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
-# Temporary storage for OAuth states (use Redis in production)
+# Temporary storage for OAuth states
 oauth_states = {}
 
 # Get environment variables
@@ -32,51 +31,29 @@ GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
 DATABASE_URL = os.getenv("DATABASE_URL")
 REDIS_URL = os.getenv("REDIS_URL")
 
-# Root endpoint
 @app.get("/")
 def read_root():
     return {
         "message": "SEO Engine Backend is running!",
         "status": "healthy",
-        "version": "1.0.0",
-        "endpoints": {
-            "api_docs": "/docs",
-            "health_check": "/health",
-            "oauth_start": "/api/connect",
-            "oauth_callback": "/api/connect/callback",
-            "test_database": "/api/test-db",
-            "test_redis": "/api/test-redis"
-        }
+        "version": "1.0.0"
     }
 
-# Health check endpoint - CRITICAL
 @app.get("/health")
 def health_check():
-    """Health check endpoint"""
     return {
         "status": "healthy",
-        "timestamp": "2024-01-15T10:00:00Z",
         "services": {
             "database": "connected" if DATABASE_URL else "not_configured",
             "redis": "connected" if REDIS_URL else "not_configured",
             "oauth": "configured" if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET else "not_configured"
-        },
-        "environment": {
-            "google_client_id": "configured" if GOOGLE_CLIENT_ID else "missing",
-            "google_client_secret": "configured" if GOOGLE_CLIENT_SECRET else "missing",
-            "redirect_uri": "configured" if GOOGLE_REDIRECT_URI else "missing",
-            "database_url": "configured" if DATABASE_URL else "missing",
-            "redis_url": "configured" if REDIS_URL else "missing",
-            "secret_key": "configured" if os.getenv("SECRET_KEY") else "missing"
         }
     }
 
-# Test database connection
 @app.get("/api/test-db")
 async def test_database():
-    """Test PostgreSQL connection"""
     if not DATABASE_URL:
-        return {"error": "DATABASE_URL not configured in environment variables"}
+        return {"error": "DATABASE_URL not configured"}
     
     try:
         import psycopg2
@@ -86,88 +63,29 @@ async def test_database():
         db_version = cur.fetchone()
         cur.close()
         conn.close()
-        
-        return {
-            "status": "connected",
-            "database": "PostgreSQL",
-            "version": db_version[0][:50] + "..."
-        }
-    except ImportError:
-        return {
-            "status": "error",
-            "error": "psycopg2 not installed. Add 'psycopg2-binary' to requirements.txt"
-        }
+        return {"status": "connected", "database": "PostgreSQL"}
     except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e),
-            "hint": "Check DATABASE_URL format and Supabase credentials"
-        }
+        return {"status": "error", "error": str(e)}
 
-# Test Redis connection
-@app.get("/api/test-redis")
-async def test_redis():
-    """Test Redis connection"""
-    if not REDIS_URL:
-        return {"error": "REDIS_URL not configured in environment variables"}
-    
-    try:
-        import redis
-        r = redis.from_url(REDIS_URL)
-        r.ping()
-        r.set("test_key", "test_value", ex=10)
-        value = r.get("test_key")
-        
-        return {
-            "status": "connected",
-            "redis": "Upstash",
-            "test": "write and read successful",
-            "value": value.decode() if value else None
-        }
-    except ImportError:
-        return {
-            "status": "error",
-            "error": "redis not installed. Add 'redis' to requirements.txt"
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e),
-            "hint": "Check REDIS_URL format and Upstash credentials"
-        }
-
-# Start OAuth flow
+# OAuth - Start
 @app.get("/api/connect")
 async def connect_gsc():
-    """Start Google OAuth flow"""
-    
     if not all([GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI]):
-        missing = []
-        if not GOOGLE_CLIENT_ID: missing.append("GOOGLE_CLIENT_ID")
-        if not GOOGLE_CLIENT_SECRET: missing.append("GOOGLE_CLIENT_SECRET")
-        if not GOOGLE_REDIRECT_URI: missing.append("GOOGLE_REDIRECT_URI")
-        
-        return JSONResponse(
-            status_code=500,
-            content={
-                "error": "OAuth not configured",
-                "missing_variables": missing,
-                "hint": "Add these in Render Environment settings"
-            }
-        )
+        return JSONResponse(status_code=500, content={"error": "OAuth not configured"})
     
-    # Generate state for CSRF protection
     state = secrets.token_urlsafe(32)
     oauth_states[state] = True
     
-    # OAuth parameters
     params = {
         "client_id": GOOGLE_CLIENT_ID,
         "redirect_uri": GOOGLE_REDIRECT_URI,
         "response_type": "code",
         "scope": " ".join([
             "https://www.googleapis.com/auth/webmasters.readonly",
-            "https://www.googleapis.com/auth/analytics.readonly"
+            "https://www.googleapis.com/auth/analytics.readonly",
+            "openid",
+            "email",
+            "profile"
         ]),
         "access_type": "offline",
         "prompt": "consent",
@@ -175,41 +93,23 @@ async def connect_gsc():
     }
     
     auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
-    
-    return {
-        "oauth_url": auth_url,
-        "state": state,
-        "instructions": "Visit oauth_url in browser to authorize"
-    }
+    return {"oauth_url": auth_url, "state": state}
 
-# OAuth callback
-# OAuth callback - UPDATED VERSION
+# OAuth - Callback
 @app.get("/api/connect/callback")
 async def oauth_callback(code: str = None, state: str = None, error: str = None):
-    """Handle OAuth callback from Google"""
-    
     if error:
-        # Redirect to frontend with error
-        return RedirectResponse(
-            url=f"https://seo-engine-gold.vercel.app/?oauth_error={error}"
-        )
+        return RedirectResponse(url=f"https://seo-engine-gold.vercel.app/?oauth_error={error}")
     
     if not code:
-        return RedirectResponse(
-            url="https://seo-engine-gold.vercel.app/?oauth_error=no_code"
-        )
+        return RedirectResponse(url="https://seo-engine-gold.vercel.app/?oauth_error=no_code")
     
-    # Validate state
     if state and state not in oauth_states:
-        return RedirectResponse(
-            url="https://seo-engine-gold.vercel.app/?oauth_error=invalid_state"
-        )
+        return RedirectResponse(url="https://seo-engine-gold.vercel.app/?oauth_error=invalid_state")
     
-    # Remove used state
     if state in oauth_states:
         del oauth_states[state]
     
-    # Exchange code for tokens
     try:
         async with httpx.AsyncClient() as client:
             token_response = await client.post(
@@ -226,9 +126,7 @@ async def oauth_callback(code: str = None, state: str = None, error: str = None)
             )
             
             if token_response.status_code != 200:
-                return RedirectResponse(
-                    url=f"https://seo-engine-gold.vercel.app/?oauth_error=token_exchange_failed"
-                )
+                return RedirectResponse(url="https://seo-engine-gold.vercel.app/?oauth_error=token_failed")
             
             tokens = token_response.json()
             
@@ -241,13 +139,12 @@ async def oauth_callback(code: str = None, state: str = None, error: str = None)
                     conn = psycopg2.connect(DATABASE_URL)
                     cur = conn.cursor()
                     
-                    # Store in connectors table
                     cur.execute("""
                         INSERT INTO connectors (site_id, type, credentials_meta, status)
                         VALUES (%s, %s, %s, %s)
                         RETURNING id
                     """, (
-                        None,  # site_id will be set later when user adds site
+                        None,
                         'gsc',
                         Json({
                             'access_token': tokens.get('access_token'),
@@ -263,53 +160,34 @@ async def oauth_callback(code: str = None, state: str = None, error: str = None)
                     cur.close()
                     conn.close()
                     
-                    # Success! Redirect to frontend with success flag
-                    return RedirectResponse(
-                        url=f"https://seo-engine-gold.vercel.app/?oauth_success=true&connector_id={connector_id}"
-                    )
+                    return RedirectResponse(url=f"https://seo-engine-gold.vercel.app/?oauth_success=true&connector_id={connector_id}")
                     
                 except Exception as db_error:
                     print(f"Database error: {db_error}")
-                    # Still redirect with success but note DB issue
-                    return RedirectResponse(
-                        url=f"https://seo-engine-gold.vercel.app/?oauth_success=true&db_warning=true"
-                    )
+                    return RedirectResponse(url="https://seo-engine-gold.vercel.app/?oauth_success=true&db_warning=true")
             else:
-                # No database configured, but OAuth worked
-                return RedirectResponse(
-                    url="https://seo-engine-gold.vercel.app/?oauth_success=true&no_db=true"
-                )
+                return RedirectResponse(url="https://seo-engine-gold.vercel.app/?oauth_success=true")
             
     except Exception as e:
-        return RedirectResponse(
-            url=f"https://seo-engine-gold.vercel.app/?oauth_error=exception"
-        )
+        print(f"OAuth error: {e}")
+        return RedirectResponse(url="https://seo-engine-gold.vercel.app/?oauth_error=exception")
 
-# Run with: uvicorn main:app --host 0.0.0.0 --port $PORT
-# ==================== SITES MANAGEMENT ====================
-
+# Sites Management
 @app.post("/api/sites")
 async def create_site(site_data: dict):
-    """Create a new site"""
     if not DATABASE_URL:
         return {"error": "Database not configured"}
     
     try:
         import psycopg2
-        
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         
-        # Insert site (owner_id = 1 for now, will add proper auth later)
         cur.execute("""
             INSERT INTO sites (owner_id, domain, sitemap_url, created_at)
             VALUES (%s, %s, %s, NOW())
             RETURNING id, domain, sitemap_url, created_at
-        """, (
-            1,  # Default user
-            site_data.get('domain'),
-            site_data.get('sitemap_url')
-        ))
+        """, (1, site_data.get('domain'), site_data.get('sitemap_url')))
         
         site = cur.fetchone()
         conn.commit()
@@ -325,19 +203,16 @@ async def create_site(site_data: dict):
                 "created_at": site[3].isoformat()
             }
         }
-        
     except Exception as e:
         return {"error": str(e)}
 
 @app.get("/api/sites")
 async def get_sites():
-    """Get all sites"""
     if not DATABASE_URL:
-        return {"error": "Database not configured"}
+        return {"sites": []}
     
     try:
         import psycopg2
-        
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         
@@ -359,17 +234,38 @@ async def get_sites():
         
         cur.close()
         conn.close()
-        
         return {"sites": sites}
+    except Exception as e:
+        return {"sites": [], "error": str(e)}
+
+# Delete Site
+@app.delete("/api/sites/{site_id}")
+async def delete_site(site_id: int):
+    if not DATABASE_URL:
+        return {"error": "Database not configured"}
+    
+    try:
+        import psycopg2
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
         
+        # Delete related data first
+        cur.execute("DELETE FROM gsc_metrics WHERE site_id = %s", (site_id,))
+        cur.execute("DELETE FROM ga4_metrics WHERE site_id = %s", (site_id,))
+        cur.execute("DELETE FROM issues WHERE site_id = %s", (site_id,))
+        cur.execute("DELETE FROM sites WHERE id = %s", (site_id,))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return {"success": True, "message": "Site deleted successfully"}
     except Exception as e:
         return {"error": str(e)}
 
-# ==================== GSC DATA FETCHING ====================
-
+# Fetch GSC Data - FIXED VERSION
 @app.post("/api/fetch-gsc-data")
 async def fetch_gsc_data(request_data: dict):
-    """Fetch GSC data for a site"""
     site_id = request_data.get('site_id')
     
     if not DATABASE_URL:
@@ -392,6 +288,12 @@ async def fetch_gsc_data(request_data: dict):
         
         domain = site[0]
         
+        # Format domain for GSC API (needs sc-domain: prefix or https://)
+        if not domain.startswith('http'):
+            gsc_site_url = f"sc-domain:{domain}"
+        else:
+            gsc_site_url = domain
+        
         # Get OAuth credentials
         cur.execute("""
             SELECT credentials_meta 
@@ -404,19 +306,27 @@ async def fetch_gsc_data(request_data: dict):
         connector = cur.fetchone()
         
         if not connector:
-            return {"error": "No GSC connector found. Please connect Google account first."}
+            return {
+                "error": "No GSC connector found",
+                "solution": "Please click 'Connect Google Account' button first to authorize GSC access."
+            }
         
         credentials = connector[0]
         access_token = credentials.get('access_token')
         
         if not access_token:
-            return {"error": "No access token found"}
+            return {
+                "error": "No access token found",
+                "solution": "Please reconnect your Google account. Your token may have expired."
+            }
         
         # Fetch data from GSC API
         end_date = datetime.now().date()
         start_date = end_date - timedelta(days=90)
         
-        gsc_api_url = f"https://www.googleapis.com/webmasters/v3/sites/{domain}/searchAnalytics/query"
+        # URL encode the site URL properly
+        encoded_site_url = quote_plus(gsc_site_url)
+        gsc_api_url = f"https://searchconsole.googleapis.com/webmasters/v3/sites/{encoded_site_url}/searchAnalytics/query"
         
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -435,14 +345,34 @@ async def fetch_gsc_data(request_data: dict):
             )
             
             if response.status_code != 200:
+                error_detail = response.text
+                solution_message = ""
+                
+                if "403" in str(response.status_code):
+                    solution_message = "Permission denied. Make sure this Google account has access to this property in Google Search Console."
+                elif "404" in str(response.status_code):
+                    solution_message = f"Property '{domain}' not found in your GSC account. Add it to GSC first or check the domain format."
+                elif "401" in str(response.status_code):
+                    solution_message = "Token expired. Please reconnect your Google account."
+                else:
+                    solution_message = "Check if the domain is added to your Google Search Console and you have permission to access it."
+                
                 return {
-                    "error": "Failed to fetch GSC data",
-                    "details": response.text,
-                    "status_code": response.status_code
+                    "error": f"Failed to fetch GSC data (Status: {response.status_code})",
+                    "details": error_detail,
+                    "solution": solution_message,
+                    "tried_url": gsc_site_url
                 }
             
             gsc_data = response.json()
             rows = gsc_data.get('rows', [])
+            
+            if len(rows) == 0:
+                return {
+                    "success": True,
+                    "rows_imported": 0,
+                    "message": "No data found for this property. The site may not have enough search traffic yet."
+                }
             
             # Store in database
             for row in rows:
@@ -474,40 +404,39 @@ async def fetch_gsc_data(request_data: dict):
             conn.commit()
             
             # Update last_scan_at
-            cur.execute("""
-                UPDATE sites 
-                SET last_scan_at = NOW()
-                WHERE id = %s
-            """, (site_id,))
-            
+            cur.execute("UPDATE sites SET last_scan_at = NOW() WHERE id = %s", (site_id,))
             conn.commit()
+            
+            # Run diagnostics
+            run_diagnostics(site_id, cur)
+            conn.commit()
+            
             cur.close()
             conn.close()
             
             return {
                 "success": True,
                 "rows_imported": len(rows),
-                "message": f"Successfully imported {len(rows)} rows from GSC"
+                "message": f"✅ Successfully imported {len(rows)} rows from GSC. Running AI diagnostics..."
             }
             
     except Exception as e:
-        return {"error": str(e)}
+        return {
+            "error": str(e),
+            "solution": "Check your internet connection and try again. If the problem persists, try reconnecting your Google account."
+        }
 
-# ==================== GET GSC DATA ====================
-
+# Get GSC Data
 @app.get("/api/gsc-data/{site_id}")
 async def get_gsc_data(site_id: int):
-    """Get GSC data for a site"""
     if not DATABASE_URL:
         return {"error": "Database not configured"}
     
     try:
         import psycopg2
-        
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         
-        # Get aggregated data
         cur.execute("""
             SELECT 
                 url,
@@ -536,6 +465,147 @@ async def get_gsc_data(site_id: int):
         conn.close()
         
         return {"pages": pages, "count": len(pages)}
+    except Exception as e:
+        return {"error": str(e), "pages": [], "count": 0}
+
+# Export Data
+@app.get("/api/export-gsc-data/{site_id}")
+async def export_gsc_data(site_id: int):
+    if not DATABASE_URL:
+        return {"error": "Database not configured"}
+    
+    try:
+        import psycopg2
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
         
+        cur.execute("""
+            SELECT url, query, impressions, clicks, ctr, position, date
+            FROM gsc_metrics
+            WHERE site_id = %s
+            ORDER BY impressions DESC
+        """, (site_id,))
+        
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        # Convert to CSV format
+        csv_data = "URL,Query,Impressions,Clicks,CTR,Position,Date\n"
+        for row in rows:
+            csv_data += f'"{row[0]}","{row[1]}",{row[2]},{row[3]},{row[4]},{row[5]},"{row[6]}"\n'
+        
+        return {"success": True, "csv_data": csv_data, "rows_count": len(rows)}
     except Exception as e:
         return {"error": str(e)}
+
+# AI Diagnostics Function
+def run_diagnostics(site_id: int, cur):
+    """Run AI diagnostics on site data"""
+    try:
+        # Get all pages with metrics
+        cur.execute("""
+            SELECT 
+                url,
+                SUM(impressions) as total_impressions,
+                SUM(clicks) as total_clicks,
+                AVG(ctr) as avg_ctr,
+                AVG(position) as avg_position
+            FROM gsc_metrics
+            WHERE site_id = %s
+            GROUP BY url
+        """, (site_id,))
+        
+        pages = cur.fetchall()
+        
+        for page in pages:
+            url, impressions, clicks, ctr, position = page
+            
+            # Rule 1: Low CTR
+            if impressions >= 100 and ctr < 0.02 and 3 <= position <= 15:
+                cur.execute("""
+                    INSERT INTO issues (site_id, issue_type, severity, description, suggested_action, status)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                """, (
+                    site_id,
+                    'low_ctr',
+                    'high',
+                    f'Page "{url}" has low CTR ({ctr*100:.2f}%) despite good position ({position:.1f}). Getting {impressions} impressions but only {clicks} clicks.',
+                    f'🔧 AI Suggestion: Optimize meta title and description. Current CTR is {(ctr*100):.1f}% but should be at least 5% for position {position:.1f}. Add power words like "Best", "Guide", "2024" to title. Include numbers and questions in meta description.'
+                ))
+            
+            # Rule 2: No clicks despite impressions
+            if impressions >= 500 and clicks == 0:
+                cur.execute("""
+                    INSERT INTO issues (site_id, issue_type, severity, description, suggested_action, status)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                """, (
+                    site_id,
+                    'zero_clicks',
+                    'critical',
+                    f'Page "{url}" has {impressions} impressions but ZERO clicks!',
+                    f'🚨 CRITICAL: Your page is showing in search but nobody is clicking. Check: 1) Title is compelling? 2) Meta description matches user intent? 3) URL looks trustworthy? Add current year to title and use action words in meta description.'
+                ))
+            
+            # Rule 3: Poor ranking (position > 20)
+            if impressions >= 50 and position > 20:
+                cur.execute("""
+                    INSERT INTO issues (site_id, issue_type, severity, description, suggested_action, status)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING
+                """, (
+                    site_id,
+                    'poor_ranking',
+                    'medium',
+                    f'Page "{url}" ranks at position {position:.1f} (page 3+)',
+                    f'💡 Improvement Strategy: 1) Add more comprehensive content (aim for 1500+ words), 2) Get 3-5 quality backlinks, 3) Improve internal linking from homepage, 4) Add FAQ schema markup, 5) Optimize for featured snippets with Q&A format'
+                ))
+        
+    except Exception as e:
+        print(f"Diagnostics error: {e}")
+
+# Get Issues/Diagnostics
+@app.get("/api/issues/{site_id}")
+async def get_issues(site_id: int):
+    if not DATABASE_URL:
+        return {"issues": []}
+    
+    try:
+        import psycopg2
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        
+        cur.execute("""
+            SELECT id, issue_type, severity, description, suggested_action, status, created_at
+            FROM issues
+            WHERE site_id = %s
+            ORDER BY 
+                CASE severity
+                    WHEN 'critical' THEN 1
+                    WHEN 'high' THEN 2
+                    WHEN 'medium' THEN 3
+                    ELSE 4
+                END,
+                created_at DESC
+        """, (site_id,))
+        
+        issues = []
+        for row in cur.fetchall():
+            issues.append({
+                "id": row[0],
+                "type": row[1],
+                "severity": row[2],
+                "description": row[3],
+                "suggestion": row[4],
+                "status": row[5],
+                "created_at": row[6].isoformat() if row[6] else None
+            })
+        
+        cur.close()
+        conn.close()
+        
+        return {"issues": issues, "count": len(issues)}
+    except Exception as e:
+        return {"issues": [], "error": str(e)}
