@@ -289,12 +289,10 @@ async def fetch_gsc_data(request_data: dict):
         domain = site[0]
         
         # Format domain for GSC API (needs sc-domain: prefix or https://)
-        # Ensure correct URL format for GSC API
-if domain.startswith("http"):
-    gsc_site_url = domain.rstrip("/")  # e.g. https://www.smashmaths.org
+        if not domain.startswith('http'):
+    gsc_site_url = f"sc-domain:{domain}"
 else:
-    # Default to HTTPS URL prefix property format
-    gsc_site_url = f"https://{domain.rstrip('/')}"
+    gsc_site_url = domain
 
         
         # Get OAuth credentials
