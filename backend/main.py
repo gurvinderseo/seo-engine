@@ -290,10 +290,9 @@ async def fetch_gsc_data(request_data: dict):
         
         # Format domain for GSC API (needs sc-domain: prefix or https://)
         if not domain.startswith('http'):
-    gsc_site_url = f"sc-domain:{domain}"
-else:
-    gsc_site_url = domain
-
+        gsc_site_url = f"sc-domain:{domain}"
+        else:
+        gsc_site_url = domain
         
         # Get OAuth credentials
         cur.execute("""
