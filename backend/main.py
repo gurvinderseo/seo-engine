@@ -288,8 +288,7 @@ async def fetch_gsc_data(request_data: dict):
         
         domain = site[0]
         
-        # Format domain for GSC API - try multiple formats
-# First, try URL prefix format (most common)
+        # First, try URL prefix format (most common)
 if domain.startswith('http'):
     gsc_site_url = domain
 else:
