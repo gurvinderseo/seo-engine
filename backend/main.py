@@ -288,11 +288,15 @@ async def fetch_gsc_data(request_data: dict):
         
         domain = site[0]
         
-        # Format domain for GSC API (needs sc-domain: prefix or https://)
-        if not domain.startswith('http'):
-            gsc_site_url = f"sc-domain:{domain}"
-        else:
-            gsc_site_url = domain
+        # Format domain for GSC API - try multiple formats
+# First, try URL prefix format (most common)
+if domain.startswith('http'):
+    gsc_site_url = domain
+else:
+    # Try with https:// first
+    gsc_site_url = f"https://{domain}"
+    
+# Note: If https fails, we'll also try http and sc-domain formats below
         
         # Get OAuth credentials
         cur.execute("""
@@ -328,7 +332,29 @@ async def fetch_gsc_data(request_data: dict):
         encoded_site_url = quote_plus(gsc_site_url)
         gsc_api_url = f"https://searchconsole.googleapis.com/webmasters/v3/sites/{encoded_site_url}/searchAnalytics/query"
         
-        async with httpx.AsyncClient() as client:
+        # Try multiple URL formats
+url_formats = []
+
+if domain.startswith('http'):
+    url_formats = [domain]
+else:
+    # Try these formats in order
+    url_formats = [
+        f"https://{domain}",           # https://example.com
+        f"https://www.{domain}",       # https://www.example.com
+        f"http://{domain}",            # http://example.com
+        f"sc-domain:{domain}"          # sc-domain:example.com
+    ]
+
+last_error = None
+success = False
+
+async with httpx.AsyncClient() as client:
+    for attempt_url in url_formats:
+        try:
+            encoded_site_url = quote_plus(attempt_url)
+            gsc_api_url = f"https://searchconsole.googleapis.com/webmasters/v3/sites/{encoded_site_url}/searchAnalytics/query"
+            
             response = await client.post(
                 gsc_api_url,
                 json={
@@ -343,6 +369,124 @@ async def fetch_gsc_data(request_data: dict):
                 },
                 timeout=30.0
             )
+            
+            if response.status_code == 200:
+                # Success! Use this format
+                gsc_data = response.json()
+                rows = gsc_data.get('rows', [])
+                success = True
+                
+                if len(rows) == 0:
+                    return {
+                        "success": True,
+                        "rows_imported": 0,
+                        "message": "No data found for this property. The site may not have enough search traffic yet.",
+                        "tried_url": attempt_url
+                    }
+                
+                # Store in database
+                for row in rows:
+                    keys = row.get('keys', [])
+                    page_url = keys[0] if len(keys) > 0 else None
+                    query = keys[1] if len(keys) > 1 else None
+                    
+                    impressions = row.get('impressions', 0)
+                    clicks = row.get('clicks', 0)
+                    ctr = row.get('ctr', 0.0)
+                    position = row.get('position', 0.0)
+                    
+                    cur.execute("""
+                        INSERT INTO gsc_metrics 
+                        (site_id, url, query, impressions, clicks, ctr, position, date)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT DO NOTHING
+                    """, (
+                        site_id,
+                        page_url,
+                        query,
+                        impressions,
+                        clicks,
+                        ctr,
+                        position,
+                        datetime.now()
+                    ))
+                
+                conn.commit()
+                
+                # Update last_scan_at
+                cur.execute("UPDATE sites SET last_scan_at = NOW() WHERE id = %s", (site_id,))
+                conn.commit()
+                
+                # Run diagnostics
+                run_diagnostics(site_id, cur)
+                conn.commit()
+                
+                cur.close()
+                conn.close()
+                
+                return {
+                    "success": True,
+                    "rows_imported": len(rows),
+                    "message": f"✅ Successfully imported {len(rows)} rows from GSC using format: {attempt_url}"
+                }
+                
+            else:
+                last_error = {
+                    "url": attempt_url,
+                    "status": response.status_code,
+                    "details": response.text
+                }
+                continue  # Try next format
+                
+        except Exception as e:
+            last_error = {
+                "url": attempt_url,
+                "error": str(e)
+            }
+            continue  # Try next format
+
+# If we get here, all formats failed
+if last_error:
+    error_msg = "Failed to fetch GSC data. "
+    
+    if "status" in last_error and last_error["status"] == 403:
+        error_msg = "Permission denied."
+        solution = f"""Make sure:
+1. This Google account has OWNER or FULL access to {domain} in Google Search Console
+2. The property is verified in GSC at: https://search.google.com/search-console
+3. You've waited 24-48 hours after adding the property
+
+Tried these formats: {', '.join(url_formats)}
+Last error: 403 Forbidden"""
+    elif "status" in last_error and last_error["status"] == 404:
+        solution = f"""Property not found in your Google Search Console.
+
+Steps to fix:
+1. Go to https://search.google.com/search-console
+2. Click "Add Property"
+3. Add: {domain}
+4. Verify ownership
+5. Wait 24-48 hours for data to appear
+6. Try fetching again
+
+Tried formats: {', '.join(url_formats)}"""
+    else:
+        solution = f"""Unable to connect to Google Search Console.
+
+Possible issues:
+- Property not added to GSC yet
+- Wrong domain format
+- No access permission
+- Token expired (try reconnecting Google account)
+
+Tried these formats: {', '.join(url_formats)}
+Last error: {last_error.get('error', last_error.get('details', 'Unknown error'))}"""
+    
+    return {
+        "error": error_msg,
+        "solution": solution,
+        "tried_urls": url_formats
+    }
             
             if response.status_code != 200:
                 error_detail = response.text
