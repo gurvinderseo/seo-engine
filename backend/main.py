@@ -612,5 +612,299 @@ async def get_issues(site_id: int):
         conn.close()
         
         return {"issues": issues, "count": len(issues)}
+        # ==================== AI COMPETITOR ANALYSIS ====================
+
+HUGGINGFACE_API_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")
+SERPER_API_KEY = os.getenv("SERPER_API_KEY")
+
+async def search_google(query: str, num_results: int = 10):
+    """Search Google using Serper API"""
+    if not SERPER_API_KEY:
+        return []
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://google.serper.dev/search",
+                json={"q": query, "num": num_results},
+                headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+                timeout=10.0
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                return data.get('organic', [])
+            return []
+    except:
+        return []
+
+async def analyze_competitor_page(url: str):
+    """Scrape and analyze competitor page"""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=10.0, follow_redirects=True)
+            
+            if response.status_code == 200:
+                html = response.text
+                
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(html, 'html.parser')
+                
+                # Extract all relevant SEO data
+                title = soup.find('title').text if soup.find('title') else ""
+                meta_desc = soup.find('meta', {'name': 'description'})
+                meta_desc = meta_desc.get('content', '') if meta_desc else ""
+                
+                # Count headings
+                h1_count = len(soup.find_all('h1'))
+                h2_count = len(soup.find_all('h2'))
+                h3_count = len(soup.find_all('h3'))
+                
+                # Get all headings
+                h1s = [h.text.strip() for h in soup.find_all('h1')]
+                h2s = [h.text.strip() for h in soup.find_all('h2')][:10]  # First 10
+                
+                # Word count
+                text = soup.get_text()
+                words = len(text.split())
+                
+                # Images
+                images = len(soup.find_all('img'))
+                
+                # Internal links
+                links = soup.find_all('a', href=True)
+                internal_links = len([l for l in links if url.split('/')[2] in l.get('href', '')])
+                external_links = len(links) - internal_links
+                
+                # Schema markup
+                schemas = soup.find_all('script', {'type': 'application/ld+json'})
+                schema_types = []
+                for schema in schemas:
+                    try:
+                        import json
+                        schema_data = json.loads(schema.string)
+                        if '@type' in schema_data:
+                            schema_types.append(schema_data['@type'])
+                    except:
+                        pass
+                
+                # FAQ detection
+                has_faq = bool(soup.find_all(['div', 'section'], class_=lambda x: x and 'faq' in x.lower()))
+                
+                return {
+                    "url": url,
+                    "title": title,
+                    "title_length": len(title),
+                    "meta_desc": meta_desc,
+                    "meta_desc_length": len(meta_desc),
+                    "word_count": words,
+                    "h1_count": h1_count,
+                    "h2_count": h2_count,
+                    "h3_count": h3_count,
+                    "h1s": h1s,
+                    "h2s": h2s,
+                    "images": images,
+                    "internal_links": internal_links,
+                    "external_links": external_links,
+                    "schemas": schema_types,
+                    "has_faq": has_faq,
+                    "has_schema": len(schema_types) > 0
+                }
+    except:
+        return None
+
+async def generate_ai_suggestions(page_data: dict, competitors: list, query: str):
+    """Generate AI suggestions using HuggingFace"""
+    if not HUGGINGFACE_API_TOKEN:
+        return "AI suggestions unavailable. Add HUGGINGFACE_API_TOKEN to environment."
+    
+    # Analyze competitors
+    competitor_analysis = []
+    for comp in competitors[:3]:  # Top 3
+        analysis = await analyze_competitor_page(comp['link'])
+        if analysis:
+            competitor_analysis.append(analysis)
+    
+    if not competitor_analysis:
+        return "Unable to analyze competitors"
+    
+    # Compare with your page
+    avg_words = sum(c['word_count'] for c in competitor_analysis) / len(competitor_analysis)
+    avg_h2 = sum(c['h2_count'] for c in competitor_analysis) / len(competitor_analysis)
+    avg_images = sum(c['images'] for c in competitor_analysis) / len(competitor_analysis)
+    
+    your_url = page_data.get('url', '')
+    your_words = page_data.get('word_count', 0)
+    your_h2s = page_data.get('h2_count', 0)
+    
+    suggestions = []
+    
+    # Content length
+    if your_words < avg_words * 0.8:
+        suggestions.append(f"📝 **Content Length**: Your page has {your_words} words. Top competitors average {int(avg_words)} words. Add {int(avg_words - your_words)} more words of high-quality content.")
+    
+    # Headings structure
+    if your_h2s < avg_h2:
+        suggestions.append(f"📊 **Heading Structure**: Add {int(avg_h2 - your_h2s)} more H2 headings. Top competitors use {int(avg_h2)} H2s on average.")
+    
+    # Schema markup
+    competitor_schemas = [s for c in competitor_analysis for s in c['schemas']]
+    if competitor_schemas and not page_data.get('has_schema'):
+        unique_schemas = list(set(competitor_schemas))
+        suggestions.append(f"🏷️ **Schema Markup**: Competitors use: {', '.join(unique_schemas)}. Add schema to your page for rich snippets.")
+    
+    # FAQ
+    has_faq_competitors = sum(1 for c in competitor_analysis if c['has_faq'])
+    if has_faq_competitors >= 2 and not page_data.get('has_faq'):
+        suggestions.append(f"❓ **FAQ Section**: {has_faq_competitors} out of 3 top competitors have FAQ sections. Add an FAQ section to compete.")
+    
+    # Images
+    if page_data.get('images', 0) < avg_images * 0.7:
+        suggestions.append(f"🖼️ **Visual Content**: Add more images. Competitors average {int(avg_images)} images per page.")
+    
+    # Meta optimization
+    if page_data.get('title_length', 0) < 40:
+        suggestions.append(f"🔤 **Title Tag**: Your title is only {page_data.get('title_length')} characters. Expand to 50-60 characters for better CTR.")
+    
+    if not suggestions:
+        suggestions.append("✅ Your page is competitive! Keep monitoring and updating content regularly.")
+    
+    # Generate AI-powered content suggestions using HuggingFace
+    try:
+        prompt = f"""Analyze SEO for query: "{query}"
+
+Your page: {your_words} words, {your_h2s} H2 headings
+Top competitors: {int(avg_words)} words avg, {int(avg_h2)} H2s avg
+
+Competitor H2 examples:
+{chr(10).join(competitor_analysis[0]['h2s'][:5])}
+
+Generate 3 actionable SEO improvements:"""
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api-inference.huggingface.co/models/facebook/bart-large-cnn",
+                headers={"Authorization": f"Bearer {HUGGINGFACE_API_TOKEN}"},
+                json={"inputs": prompt, "parameters": {"max_length": 200, "min_length": 50}},
+                timeout=30.0
+            )
+            
+            if response.status_code == 200:
+                ai_text = response.json()
+                if isinstance(ai_text, list) and len(ai_text) > 0:
+                    suggestions.append(f"\n🤖 **AI Analysis**: {ai_text[0].get('summary_text', '')}")
+    except:
+        pass
+    
+    return "\n\n".join(suggestions)
+
+@app.post("/api/analyze-competitors")
+async def analyze_competitors(request_data: dict):
+    """Complete competitor analysis for a page"""
+    site_id = request_data.get('site_id')
+    page_url = request_data.get('page_url')
+    
+    if not DATABASE_URL:
+        return {"error": "Database not configured"}
+    
+    try:
+        import psycopg2
+        conn = psycopg2.connect(DATABASE_URL)
+        cur = conn.cursor()
+        
+        # Get top query for this page
+        cur.execute("""
+            SELECT query, impressions, clicks, position
+            FROM gsc_metrics
+            WHERE site_id = %s AND url = %s
+            ORDER BY impressions DESC
+            LIMIT 1
+        """, (site_id, page_url))
+        
+        query_data = cur.fetchone()
+        
+        if not query_data:
+            cur.close()
+            conn.close()
+            return {"error": "No data found for this page"}
+        
+        query, impressions, clicks, position = query_data
+        
+        # Search Google for this query
+        search_results = await search_google(query, 10)
+        
+        if not search_results:
+            cur.close()
+            conn.close()
+            return {"error": "Unable to fetch Google results. Check SERPER_API_KEY."}
+        
+        # Analyze your page
+        your_page_analysis = await analyze_competitor_page(page_url)
+        
+        if not your_page_analysis:
+            your_page_analysis = {
+                "url": page_url,
+                "word_count": 0,
+                "h2_count": 0,
+                "images": 0,
+                "has_schema": False,
+                "has_faq": False
+            }
+        
+        # Generate AI suggestions
+        suggestions = await generate_ai_suggestions(your_page_analysis, search_results, query)
+        
+        # Store as issue with suggestions
+        cur.execute("""
+            INSERT INTO issues (site_id, issue_type, severity, description, suggested_action, status)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (
+            site_id,
+            'competitor_analysis',
+            'medium',
+            f'Competitor analysis for "{query}" (Position: {position:.1f})',
+            suggestions
+        ))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        # Return detailed analysis
+        return {
+            "success": True,
+            "query": query,
+            "your_position": position,
+            "your_page": your_page_analysis,
+            "top_competitors": search_results[:3],
+            "suggestions": suggestions,
+            "competitors_analyzed": len([r for r in search_results if r.get('link')])
+        }
+        
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/auto-improve/{site_id}/{page_url:path}")
+async def auto_improve_page(site_id: int, page_url: str):
+    """One-click auto-improve with AI"""
+    
+    try:
+        # Run competitor analysis
+        analysis = await analyze_competitors({
+            "site_id": site_id,
+            "page_url": page_url
+        })
+        
+        if analysis.get('success'):
+            return {
+                "success": True,
+                "message": "✅ AI analysis complete! Check 'View AI Suggestions' for detailed improvements.",
+                "improvements_found": len(analysis.get('suggestions', '').split('\n\n'))
+            }
+        else:
+            return analysis
+            
+    except Exception as e:
+        return {"error": str(e)}
     except Exception as e:
         return {"issues": [], "error": str(e)}
