@@ -613,7 +613,7 @@ async def get_issues(site_id: int):
         
         return {"issues": issues, "count": len(issues)}
         except Exception as e:
-        print(f"Diagnostics error: {e}")
+         return {"error": str(e)}
 
         # ==================== AI COMPETITOR ANALYSIS ====================
 
