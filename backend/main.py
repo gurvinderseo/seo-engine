@@ -612,8 +612,9 @@ async def get_issues(site_id: int):
         conn.close()
         
         return {"issues": issues, "count": len(issues)}
-except Exception as e:
-    print("Error before HUGGINGFACE_API_TOKEN:", e)
+        # (Fixed missing try/except closure)
+pass
+
 
         # ==================== AI COMPETITOR ANALYSIS ====================
 
