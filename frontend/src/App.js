@@ -183,7 +183,32 @@ function App() {
       })
       .catch(err => console.error('Error loading issues:', err));
   };
-
+const handleAIAnalysis = (siteId, pageUrl) => {
+  setLoading(true);
+  
+  fetch(`${API_URL}/api/analyze-competitors`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ 
+      site_id: siteId, 
+      page_url: pageUrl 
+    })
+  })
+    .then(res => res.json())
+    .then(data => {
+      setLoading(false);
+      if (data.success) {
+        alert(`🤖 AI Analysis Complete!\n\n${data.suggestions}\n\nCheck "View AI Suggestions" for full details.`);
+        loadIssues(siteId);
+      } else {
+        alert('Error: ' + (data.error || 'Unknown error'));
+      }
+    })
+    .catch(err => {
+      setLoading(false);
+      alert('Error: ' + err.message);
+    });
+};
   const handleExportData = (siteId) => {
     fetch(`${API_URL}/api/export-gsc-data/${siteId}`)
       .then(res => res.json())
@@ -541,6 +566,7 @@ function App() {
                     <th style={{ padding: '15px', textAlign: 'right', fontWeight: 'bold' }}>Clicks</th>
                     <th style={{ padding: '15px', textAlign: 'right', fontWeight: 'bold' }}>CTR</th>
                     <th style={{ padding: '15px', textAlign: 'right', fontWeight: 'bold' }}>Position</th>
+                    <th style={{ padding: '15px', textAlign: 'center', fontWeight: 'bold' }}>AI Analysis</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -561,6 +587,24 @@ function App() {
                       <td style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold', color: page.position > 10 ? '#dc3545' : '#28a745' }}>
                         {page.position.toFixed(1)}
                       </td>
+                        <td style={{ padding: '12px', textAlign: 'center' }}>
+  <button 
+    onClick={() => handleAIAnalysis(selectedSiteId, page.url)}
+    disabled={loading}
+    style={{ 
+      background: loading ? '#ccc' : '#9c27b0', 
+      color: 'white', 
+      padding: '8px 16px', 
+      border: 'none', 
+      borderRadius: '6px', 
+      cursor: loading ? 'not-allowed' : 'pointer',
+      fontSize: '13px',
+      fontWeight: 'bold'
+    }}
+  >
+    {loading ? '⏳' : '🤖 AI Analyze'}
+  </button>
+</td>
                     </tr>
                   ))}
                 </tbody>
