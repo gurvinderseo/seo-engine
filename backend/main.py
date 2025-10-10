@@ -612,8 +612,8 @@ async def get_issues(site_id: int):
         conn.close()
         
         return {"issues": issues, "count": len(issues)}
-        except Exception as e:
-         return {"error": str(e)}
+    except Exception as e:
+        return {"error": str(e)}
 
         # ==================== AI COMPETITOR ANALYSIS ====================
 
