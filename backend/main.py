@@ -263,9 +263,11 @@ async def delete_site(site_id: int):
     except Exception as e:
         return {"error": str(e)}
 
-# Fetch GSC Data - FIXED VERSION
+# ==================== GSC DATA FETCHING ====================
+
 @app.post("/api/fetch-gsc-data")
 async def fetch_gsc_data(request_data: dict):
+    """Fetch GSC data for a site"""
     site_id = request_data.get('site_id')
     
     if not DATABASE_URL:
@@ -287,15 +289,6 @@ async def fetch_gsc_data(request_data: dict):
             return {"error": "Site not found"}
         
         domain = site[0]
-        
-        # First, try URL prefix format (most common)
-if domain.startswith('http'):
-    gsc_site_url = domain
-else:
-    # Try with https:// first
-    gsc_site_url = f"https://{domain}"
-    
-# Note: If https fails, we'll also try http and sc-domain formats below
         
         # Get OAuth credentials
         cur.execute("""
@@ -327,196 +320,173 @@ else:
         end_date = datetime.now().date()
         start_date = end_date - timedelta(days=90)
         
-        # URL encode the site URL properly
-        encoded_site_url = quote_plus(gsc_site_url)
-        gsc_api_url = f"https://searchconsole.googleapis.com/webmasters/v3/sites/{encoded_site_url}/searchAnalytics/query"
-        
         # Try multiple URL formats
-url_formats = []
-
-if domain.startswith('http'):
-    url_formats = [domain]
-else:
-    # Try these formats in order
-    url_formats = [
-        f"https://{domain}",           # https://example.com
-        f"https://www.{domain}",       # https://www.example.com
-        f"http://{domain}",            # http://example.com
-        f"sc-domain:{domain}"          # sc-domain:example.com
-    ]
-
-last_error = None
-success = False
-
-async with httpx.AsyncClient() as client:
-    for attempt_url in url_formats:
-        try:
-            encoded_site_url = quote_plus(attempt_url)
-            gsc_api_url = f"https://searchconsole.googleapis.com/webmasters/v3/sites/{encoded_site_url}/searchAnalytics/query"
-            
-            response = await client.post(
-                gsc_api_url,
-                json={
-                    "startDate": start_date.isoformat(),
-                    "endDate": end_date.isoformat(),
-                    "dimensions": ["page", "query"],
-                    "rowLimit": 1000
-                },
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json"
-                },
-                timeout=30.0
-            )
-            
-            if response.status_code == 200:
-                # Success! Use this format
-                gsc_data = response.json()
-                rows = gsc_data.get('rows', [])
-                success = True
-                
-                if len(rows) == 0:
-                    return {
-                        "success": True,
-                        "rows_imported": 0,
-                        "message": "No data found for this property. The site may not have enough search traffic yet.",
-                        "tried_url": attempt_url
+        url_formats = []
+        if domain.startswith('http'):
+            url_formats = [domain]
+        else:
+            url_formats = [
+                f"https://{domain}",
+                f"https://www.{domain}",
+                f"http://{domain}",
+                f"sc-domain:{domain}"
+            ]
+        
+        last_error = None
+        
+        async with httpx.AsyncClient() as client:
+            for attempt_url in url_formats:
+                try:
+                    encoded_site_url = quote_plus(attempt_url)
+                    gsc_api_url = f"https://searchconsole.googleapis.com/webmasters/v3/sites/{encoded_site_url}/searchAnalytics/query"
+                    
+                    response = await client.post(
+                        gsc_api_url,
+                        json={
+                            "startDate": start_date.isoformat(),
+                            "endDate": end_date.isoformat(),
+                            "dimensions": ["page", "query"],
+                            "rowLimit": 1000
+                        },
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": "application/json"
+                        },
+                        timeout=30.0
+                    )
+                    
+                    if response.status_code == 200:
+                        gsc_data = response.json()
+                        rows = gsc_data.get('rows', [])
+                        
+                        if len(rows) == 0:
+                            cur.close()
+                            conn.close()
+                            return {
+                                "success": True,
+                                "rows_imported": 0,
+                                "message": f"No data found for {attempt_url}. Site may not have search traffic yet."
+                            }
+                        
+                        # Store in database
+                        for row in rows:
+                            keys = row.get('keys', [])
+                            page_url = keys[0] if len(keys) > 0 else None
+                            query = keys[1] if len(keys) > 1 else None
+                            
+                            impressions = row.get('impressions', 0)
+                            clicks = row.get('clicks', 0)
+                            ctr = row.get('ctr', 0.0)
+                            position = row.get('position', 0.0)
+                            
+                            cur.execute("""
+                                INSERT INTO gsc_metrics 
+                                (site_id, url, query, impressions, clicks, ctr, position, date)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                ON CONFLICT DO NOTHING
+                            """, (
+                                site_id,
+                                page_url,
+                                query,
+                                impressions,
+                                clicks,
+                                ctr,
+                                position,
+                                datetime.now()
+                            ))
+                        
+                        conn.commit()
+                        
+                        # Update last_scan_at
+                        cur.execute("UPDATE sites SET last_scan_at = NOW() WHERE id = %s", (site_id,))
+                        conn.commit()
+                        
+                        # Run diagnostics
+                        run_diagnostics(site_id, cur)
+                        conn.commit()
+                        
+                        cur.close()
+                        conn.close()
+                        
+                        return {
+                            "success": True,
+                            "rows_imported": len(rows),
+                            "message": f"✅ Successfully imported {len(rows)} rows from GSC (format: {attempt_url})"
+                        }
+                    else:
+                        last_error = {
+                            "url": attempt_url,
+                            "status": response.status_code,
+                            "details": response.text
+                        }
+                        
+                except Exception as e:
+                    last_error = {
+                        "url": attempt_url,
+                        "error": str(e)
                     }
-                
-                # Store in database
-                for row in rows:
-                    keys = row.get('keys', [])
-                    page_url = keys[0] if len(keys) > 0 else None
-                    query = keys[1] if len(keys) > 1 else None
-                    
-                    impressions = row.get('impressions', 0)
-                    clicks = row.get('clicks', 0)
-                    ctr = row.get('ctr', 0.0)
-                    position = row.get('position', 0.0)
-                    
-                    cur.execute("""
-                        INSERT INTO gsc_metrics 
-                        (site_id, url, query, impressions, clicks, ctr, position, date)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT DO NOTHING
-                    """, (
-                        site_id,
-                        page_url,
-                        query,
-                        impressions,
-                        clicks,
-                        ctr,
-                        position,
-                        datetime.now()
-                    ))
-                
-                conn.commit()
-                
-                # Update last_scan_at
-                cur.execute("UPDATE sites SET last_scan_at = NOW() WHERE id = %s", (site_id,))
-                conn.commit()
-                
-                # Run diagnostics
-                run_diagnostics(site_id, cur)
-                conn.commit()
-                
-                cur.close()
-                conn.close()
-                
+                    continue
+        
+        # All formats failed
+        cur.close()
+        conn.close()
+        
+        if last_error:
+            status_code = last_error.get('status', 0)
+            
+            if status_code == 403:
                 return {
-                    "success": True,
-                    "rows_imported": len(rows),
-                    "message": f"✅ Successfully imported {len(rows)} rows from GSC using format: {attempt_url}"
-                }
-                
-            else:
-                last_error = {
-                    "url": attempt_url,
-                    "status": response.status_code,
-                    "details": response.text
-                }
-                continue  # Try next format
-                
-        except Exception as e:
-            last_error = {
-                "url": attempt_url,
-                "error": str(e)
-            }
-            continue  # Try next format
-
-# If we get here, all formats failed
-if last_error:
-    error_msg = "Failed to fetch GSC data. "
-    
-    if "status" in last_error and last_error["status"] == 403:
-        error_msg = "Permission denied."
-        solution = f"""Make sure:
+                    "error": "Permission denied (403)",
+                    "solution": f"""Make sure:
 1. This Google account has OWNER or FULL access to {domain} in Google Search Console
-2. The property is verified in GSC at: https://search.google.com/search-console
-3. You've waited 24-48 hours after adding the property
+2. Visit: https://search.google.com/search-console
+3. Add the property if not already added
+4. Grant access to your Google account
 
-Tried these formats: {', '.join(url_formats)}
-Last error: 403 Forbidden"""
-    elif "status" in last_error and last_error["status"] == 404:
-        solution = f"""Property not found in your Google Search Console.
+Tried these formats: {', '.join(url_formats)}""",
+                    "tried_urls": url_formats
+                }
+            elif status_code == 404:
+                return {
+                    "error": "Property not found (404)",
+                    "solution": f"""Property '{domain}' not found in Google Search Console.
 
 Steps to fix:
-1. Go to https://search.google.com/search-console
+1. Go to: https://search.google.com/search-console
 2. Click "Add Property"
 3. Add: {domain}
-4. Verify ownership
-5. Wait 24-48 hours for data to appear
-6. Try fetching again
+4. Verify ownership (DNS or HTML tag)
+5. Wait 24-48 hours for data
+6. Try again
 
-Tried formats: {', '.join(url_formats)}"""
-    else:
-        solution = f"""Unable to connect to Google Search Console.
-
-Possible issues:
-- Property not added to GSC yet
-- Wrong domain format
-- No access permission
+Tried these formats: {', '.join(url_formats)}""",
+                    "tried_urls": url_formats
+                }
+            else:
+                return {
+                    "error": f"Failed to fetch GSC data (Status: {status_code})",
+                    "solution": f"""Possible issues:
 - Token expired (try reconnecting Google account)
+- Property not accessible
+- API rate limit reached
 
-Tried these formats: {', '.join(url_formats)}
-Last error: {last_error.get('error', last_error.get('details', 'Unknown error'))}"""
-    
-    return {
-        "error": error_msg,
-        "solution": solution,
-        "tried_urls": url_formats
-    }
-            
-            if response.status_code != 200:
-                error_detail = response.text
-                solution_message = ""
-                
-                if "403" in str(response.status_code):
-                    solution_message = "Permission denied. Make sure this Google account has access to this property in Google Search Console."
-                elif "404" in str(response.status_code):
-                    solution_message = f"Property '{domain}' not found in your GSC account. Add it to GSC first or check the domain format."
-                elif "401" in str(response.status_code):
-                    solution_message = "Token expired. Please reconnect your Google account."
-                else:
-                    solution_message = "Check if the domain is added to your Google Search Console and you have permission to access it."
-                
-                return {
-                    "error": f"Failed to fetch GSC data (Status: {response.status_code})",
-                    "details": error_detail,
-                    "solution": solution_message,
-                    "tried_url": gsc_site_url
+Error: {last_error.get('error', last_error.get('details', 'Unknown'))}
+
+Tried formats: {', '.join(url_formats)}""",
+                    "tried_urls": url_formats
                 }
-            
-            gsc_data = response.json()
-            rows = gsc_data.get('rows', [])
-            
-            if len(rows) == 0:
-                return {
-                    "success": True,
-                    "rows_imported": 0,
-                    "message": "No data found for this property. The site may not have enough search traffic yet."
-                }
-            
+        
+        return {
+            "error": "Failed to fetch GSC data",
+            "solution": "Unknown error. Try reconnecting your Google account.",
+            "tried_urls": url_formats
+        }
+        
+    except Exception as e:
+        return {
+            "error": str(e),
+            "solution": "Server error. Please try again or contact support."
+        }        
             # Store in database
             for row in rows:
                 keys = row.get('keys', [])
