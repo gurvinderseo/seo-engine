@@ -612,8 +612,6 @@ async def get_issues(site_id: int):
         conn.close()
         
         return {"issues": issues, "count": len(issues)}
-        except Exception as e:
-        return {"issues": [], "error": str(e)}
 
         # ==================== AI COMPETITOR ANALYSIS ====================
 
@@ -909,4 +907,3 @@ async def auto_improve_page(site_id: int, page_url: str):
             
     except Exception as e:
         return {"error": str(e)}
-
