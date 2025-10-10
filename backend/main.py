@@ -8,7 +8,6 @@ import secrets
 
 app = FastAPI(title="SEO Engine API")
 
-# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -21,10 +20,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Temporary storage for OAuth states
 oauth_states = {}
 
-# Get environment variables
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
@@ -33,11 +30,7 @@ REDIS_URL = os.getenv("REDIS_URL")
 
 @app.get("/")
 def read_root():
-    return {
-        "message": "SEO Engine Backend is running!",
-        "status": "healthy",
-        "version": "1.0.0"
-    }
+    return {"message": "SEO Engine Backend is running!", "status": "healthy", "version": "1.0.0"}
 
 @app.get("/health")
 def health_check():
@@ -54,7 +47,6 @@ def health_check():
 async def test_database():
     if not DATABASE_URL:
         return {"error": "DATABASE_URL not configured"}
-    
     try:
         import psycopg2
         conn = psycopg2.connect(DATABASE_URL)
@@ -67,7 +59,6 @@ async def test_database():
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
-# OAuth - Start
 @app.get("/api/connect")
 async def connect_gsc():
     if not all([GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI]):
@@ -95,7 +86,6 @@ async def connect_gsc():
     auth_url = f"https://accounts.google.com/o/oauth2/v2/auth?{urlencode(params)}"
     return {"oauth_url": auth_url, "state": state}
 
-# OAuth - Callback
 @app.get("/api/connect/callback")
 async def oauth_callback(code: str = None, state: str = None, error: str = None):
     if error:
@@ -130,7 +120,6 @@ async def oauth_callback(code: str = None, state: str = None, error: str = None)
             
             tokens = token_response.json()
             
-            # Store tokens in database
             if DATABASE_URL:
                 try:
                     import psycopg2
@@ -172,7 +161,6 @@ async def oauth_callback(code: str = None, state: str = None, error: str = None)
         print(f"OAuth error: {e}")
         return RedirectResponse(url="https://seo-engine-gold.vercel.app/?oauth_error=exception")
 
-# Sites Management
 @app.post("/api/sites")
 async def create_site(site_data: dict):
     if not DATABASE_URL:
@@ -238,7 +226,6 @@ async def get_sites():
     except Exception as e:
         return {"sites": [], "error": str(e)}
 
-# Delete Site
 @app.delete("/api/sites/{site_id}")
 async def delete_site(site_id: int):
     if not DATABASE_URL:
@@ -249,7 +236,6 @@ async def delete_site(site_id: int):
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         
-        # Delete related data first
         cur.execute("DELETE FROM gsc_metrics WHERE site_id = %s", (site_id,))
         cur.execute("DELETE FROM ga4_metrics WHERE site_id = %s", (site_id,))
         cur.execute("DELETE FROM issues WHERE site_id = %s", (site_id,))
@@ -263,11 +249,8 @@ async def delete_site(site_id: int):
     except Exception as e:
         return {"error": str(e)}
 
-# ==================== GSC DATA FETCHING ====================
-
 @app.post("/api/fetch-gsc-data")
 async def fetch_gsc_data(request_data: dict):
-    """Fetch GSC data for a site"""
     site_id = request_data.get('site_id')
     
     if not DATABASE_URL:
@@ -281,16 +264,16 @@ async def fetch_gsc_data(request_data: dict):
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         
-        # Get site details
         cur.execute("SELECT domain FROM sites WHERE id = %s", (site_id,))
         site = cur.fetchone()
         
         if not site:
+            cur.close()
+            conn.close()
             return {"error": "Site not found"}
         
         domain = site[0]
         
-        # Get OAuth credentials
         cur.execute("""
             SELECT credentials_meta 
             FROM connectors 
@@ -302,34 +285,35 @@ async def fetch_gsc_data(request_data: dict):
         connector = cur.fetchone()
         
         if not connector:
+            cur.close()
+            conn.close()
             return {
                 "error": "No GSC connector found",
-                "solution": "Please click 'Connect Google Account' button first to authorize GSC access."
+                "solution": "Click 'Connect Google Account' button first."
             }
         
         credentials = connector[0]
         access_token = credentials.get('access_token')
         
         if not access_token:
+            cur.close()
+            conn.close()
             return {
-                "error": "No access token found",
-                "solution": "Please reconnect your Google account. Your token may have expired."
+                "error": "No access token",
+                "solution": "Reconnect your Google account."
             }
         
-        # Fetch data from GSC API
         end_date = datetime.now().date()
         start_date = end_date - timedelta(days=90)
         
-        # Try multiple URL formats
-        url_formats = []
-        if domain.startswith('http'):
-            url_formats = [domain]
-        else:
+        # Try URL prefix formats (for verified properties like https://example.com)
+        url_formats = [domain]  # Use exact domain as entered
+        
+        if not domain.startswith('http'):
+            # If user entered "example.com", try both https and http
             url_formats = [
                 f"https://{domain}",
-                f"https://www.{domain}",
-                f"http://{domain}",
-                f"sc-domain:{domain}"
+                f"http://{domain}"
             ]
         
         last_error = None
@@ -368,16 +352,10 @@ async def fetch_gsc_data(request_data: dict):
                                 "message": f"No data found for {attempt_url}. Site may not have search traffic yet."
                             }
                         
-                        # Store in database
                         for row in rows:
                             keys = row.get('keys', [])
                             page_url = keys[0] if len(keys) > 0 else None
                             query = keys[1] if len(keys) > 1 else None
-                            
-                            impressions = row.get('impressions', 0)
-                            clicks = row.get('clicks', 0)
-                            ctr = row.get('ctr', 0.0)
-                            position = row.get('position', 0.0)
                             
                             cur.execute("""
                                 INSERT INTO gsc_metrics 
@@ -388,20 +366,17 @@ async def fetch_gsc_data(request_data: dict):
                                 site_id,
                                 page_url,
                                 query,
-                                impressions,
-                                clicks,
-                                ctr,
-                                position,
+                                row.get('impressions', 0),
+                                row.get('clicks', 0),
+                                row.get('ctr', 0.0),
+                                row.get('position', 0.0),
                                 datetime.now()
                             ))
                         
                         conn.commit()
-                        
-                        # Update last_scan_at
                         cur.execute("UPDATE sites SET last_scan_at = NOW() WHERE id = %s", (site_id,))
                         conn.commit()
                         
-                        # Run diagnostics
                         run_diagnostics(site_id, cur)
                         conn.commit()
                         
@@ -411,23 +386,15 @@ async def fetch_gsc_data(request_data: dict):
                         return {
                             "success": True,
                             "rows_imported": len(rows),
-                            "message": f"✅ Successfully imported {len(rows)} rows from GSC (format: {attempt_url})"
+                            "message": f"✅ Successfully imported {len(rows)} rows from GSC"
                         }
                     else:
-                        last_error = {
-                            "url": attempt_url,
-                            "status": response.status_code,
-                            "details": response.text
-                        }
+                        last_error = {"url": attempt_url, "status": response.status_code, "details": response.text}
                         
                 except Exception as e:
-                    last_error = {
-                        "url": attempt_url,
-                        "error": str(e)
-                    }
+                    last_error = {"url": attempt_url, "error": str(e)}
                     continue
         
-        # All formats failed
         cur.close()
         conn.close()
         
@@ -437,109 +404,43 @@ async def fetch_gsc_data(request_data: dict):
             if status_code == 403:
                 return {
                     "error": "Permission denied (403)",
-                    "solution": f"""Make sure:
-1. This Google account has OWNER or FULL access to {domain} in Google Search Console
-2. Visit: https://search.google.com/search-console
-3. Add the property if not already added
-4. Grant access to your Google account
+                    "solution": f"""This Google account doesn't have access to {domain} in GSC.
 
-Tried these formats: {', '.join(url_formats)}""",
-                    "tried_urls": url_formats
+Fix:
+1. Go to: https://search.google.com/search-console
+2. Click on {domain} property
+3. Settings → Users → Add your Google account as Owner
+
+Tried: {', '.join(url_formats)}"""
                 }
             elif status_code == 404:
                 return {
                     "error": "Property not found (404)",
-                    "solution": f"""Property '{domain}' not found in Google Search Console.
+                    "solution": f"""Property {domain} not found.
 
-Steps to fix:
-1. Go to: https://search.google.com/search-console
-2. Click "Add Property"
-3. Add: {domain}
-4. Verify ownership (DNS or HTML tag)
-5. Wait 24-48 hours for data
-6. Try again
+Make sure you enter the EXACT URL from GSC:
+- If GSC shows "https://example.com" → enter "https://example.com"
+- If GSC shows "https://www.example.com" → enter "https://www.example.com"
 
-Tried these formats: {', '.join(url_formats)}""",
-                    "tried_urls": url_formats
+Tried: {', '.join(url_formats)}"""
                 }
             else:
                 return {
-                    "error": f"Failed to fetch GSC data (Status: {status_code})",
-                    "solution": f"""Possible issues:
-- Token expired (try reconnecting Google account)
-- Property not accessible
-- API rate limit reached
+                    "error": f"Failed (Status: {status_code})",
+                    "solution": f"""Error: {last_error.get('error', last_error.get('details', 'Unknown'))}
 
-Error: {last_error.get('error', last_error.get('details', 'Unknown'))}
+Try:
+1. Reconnect Google account
+2. Check domain format matches GSC exactly
 
-Tried formats: {', '.join(url_formats)}""",
-                    "tried_urls": url_formats
+Tried: {', '.join(url_formats)}"""
                 }
         
-        return {
-            "error": "Failed to fetch GSC data",
-            "solution": "Unknown error. Try reconnecting your Google account.",
-            "tried_urls": url_formats
-        }
+        return {"error": "Failed to fetch", "solution": "Try reconnecting Google account"}
         
     except Exception as e:
-        return {
-            "error": str(e),
-            "solution": "Server error. Please try again or contact support."
-        }        
-            # Store in database
-            for row in rows:
-                keys = row.get('keys', [])
-                page_url = keys[0] if len(keys) > 0 else None
-                query = keys[1] if len(keys) > 1 else None
-                
-                impressions = row.get('impressions', 0)
-                clicks = row.get('clicks', 0)
-                ctr = row.get('ctr', 0.0)
-                position = row.get('position', 0.0)
-                
-                cur.execute("""
-                    INSERT INTO gsc_metrics 
-                    (site_id, url, query, impressions, clicks, ctr, position, date)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT DO NOTHING
-                """, (
-                    site_id,
-                    page_url,
-                    query,
-                    impressions,
-                    clicks,
-                    ctr,
-                    position,
-                    datetime.now()
-                ))
-            
-            conn.commit()
-            
-            # Update last_scan_at
-            cur.execute("UPDATE sites SET last_scan_at = NOW() WHERE id = %s", (site_id,))
-            conn.commit()
-            
-            # Run diagnostics
-            run_diagnostics(site_id, cur)
-            conn.commit()
-            
-            cur.close()
-            conn.close()
-            
-            return {
-                "success": True,
-                "rows_imported": len(rows),
-                "message": f"✅ Successfully imported {len(rows)} rows from GSC. Running AI diagnostics..."
-            }
-            
-    except Exception as e:
-        return {
-            "error": str(e),
-            "solution": "Check your internet connection and try again. If the problem persists, try reconnecting your Google account."
-        }
+        return {"error": str(e), "solution": "Server error. Try again."}
 
-# Get GSC Data
 @app.get("/api/gsc-data/{site_id}")
 async def get_gsc_data(site_id: int):
     if not DATABASE_URL:
@@ -581,7 +482,6 @@ async def get_gsc_data(site_id: int):
     except Exception as e:
         return {"error": str(e), "pages": [], "count": 0}
 
-# Export Data
 @app.get("/api/export-gsc-data/{site_id}")
 async def export_gsc_data(site_id: int):
     if not DATABASE_URL:
@@ -603,7 +503,6 @@ async def export_gsc_data(site_id: int):
         cur.close()
         conn.close()
         
-        # Convert to CSV format
         csv_data = "URL,Query,Impressions,Clicks,CTR,Position,Date\n"
         for row in rows:
             csv_data += f'"{row[0]}","{row[1]}",{row[2]},{row[3]},{row[4]},{row[5]},"{row[6]}"\n'
@@ -612,11 +511,8 @@ async def export_gsc_data(site_id: int):
     except Exception as e:
         return {"error": str(e)}
 
-# AI Diagnostics Function
 def run_diagnostics(site_id: int, cur):
-    """Run AI diagnostics on site data"""
     try:
-        # Get all pages with metrics
         cur.execute("""
             SELECT 
                 url,
@@ -634,7 +530,6 @@ def run_diagnostics(site_id: int, cur):
         for page in pages:
             url, impressions, clicks, ctr, position = page
             
-            # Rule 1: Low CTR
             if impressions >= 100 and ctr < 0.02 and 3 <= position <= 15:
                 cur.execute("""
                     INSERT INTO issues (site_id, issue_type, severity, description, suggested_action, status)
@@ -644,11 +539,10 @@ def run_diagnostics(site_id: int, cur):
                     site_id,
                     'low_ctr',
                     'high',
-                    f'Page "{url}" has low CTR ({ctr*100:.2f}%) despite good position ({position:.1f}). Getting {impressions} impressions but only {clicks} clicks.',
-                    f'🔧 AI Suggestion: Optimize meta title and description. Current CTR is {(ctr*100):.1f}% but should be at least 5% for position {position:.1f}. Add power words like "Best", "Guide", "2024" to title. Include numbers and questions in meta description.'
+                    f'Page "{url}" has low CTR ({ctr*100:.2f}%) despite good position ({position:.1f}).',
+                    f'🔧 Optimize meta title and description. Current CTR is {(ctr*100):.1f}% but should be 5%+. Add power words like "Best", "Guide", "2024".'
                 ))
             
-            # Rule 2: No clicks despite impressions
             if impressions >= 500 and clicks == 0:
                 cur.execute("""
                     INSERT INTO issues (site_id, issue_type, severity, description, suggested_action, status)
@@ -659,10 +553,9 @@ def run_diagnostics(site_id: int, cur):
                     'zero_clicks',
                     'critical',
                     f'Page "{url}" has {impressions} impressions but ZERO clicks!',
-                    f'🚨 CRITICAL: Your page is showing in search but nobody is clicking. Check: 1) Title is compelling? 2) Meta description matches user intent? 3) URL looks trustworthy? Add current year to title and use action words in meta description.'
+                    f'🚨 CRITICAL: Page showing in search but nobody clicking. Check title relevance and meta description.'
                 ))
             
-            # Rule 3: Poor ranking (position > 20)
             if impressions >= 50 and position > 20:
                 cur.execute("""
                     INSERT INTO issues (site_id, issue_type, severity, description, suggested_action, status)
@@ -673,13 +566,12 @@ def run_diagnostics(site_id: int, cur):
                     'poor_ranking',
                     'medium',
                     f'Page "{url}" ranks at position {position:.1f} (page 3+)',
-                    f'💡 Improvement Strategy: 1) Add more comprehensive content (aim for 1500+ words), 2) Get 3-5 quality backlinks, 3) Improve internal linking from homepage, 4) Add FAQ schema markup, 5) Optimize for featured snippets with Q&A format'
+                    f'💡 Add more content (1500+ words), get backlinks, improve internal linking, add FAQ schema.'
                 ))
         
     except Exception as e:
         print(f"Diagnostics error: {e}")
 
-# Get Issues/Diagnostics
 @app.get("/api/issues/{site_id}")
 async def get_issues(site_id: int):
     if not DATABASE_URL:
