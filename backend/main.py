@@ -612,6 +612,10 @@ async def get_issues(site_id: int):
         conn.close()
         
         return {"issues": issues, "count": len(issues)}
+        # Fix: close any previous try-block
+except Exception as e:
+    print("Error before AI competitor analysis:", e)
+
         # ==================== AI COMPETITOR ANALYSIS ====================
 
 HUGGINGFACE_API_TOKEN = os.getenv("HUGGINGFACE_API_TOKEN")
