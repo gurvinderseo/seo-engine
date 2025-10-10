@@ -4,15 +4,28 @@ import './App.css';
 function App() {
   const [backendStatus, setBackendStatus] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const [sites, setSites] = useState([]);
   const [showAddSite, setShowAddSite] = useState(false);
   const [newSite, setNewSite] = useState({ domain: '', sitemap_url: '' });
   const [gscData, setGscData] = useState(null);
+  const [ga4Data, setGa4Data] = useState(null);
   const [selectedSiteId, setSelectedSiteId] = useState(null);
   const [fetchingStates, setFetchingStates] = useState({});
+  const [analyzingPages, setAnalyzingPages] = useState({});
   const [issues, setIssues] = useState([]);
   const [showIssues, setShowIssues] = useState(false);
+  
+  // New state for filters and pagination
+  const [dateRange, setDateRange] = useState(90);
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [customEndDate, setCustomEndDate] = useState('');
+  const [deviceFilter, setDeviceFilter] = useState('');
+  const [countryFilter, setCountryFilter] = useState('');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [perPage] = useState(50);
+  const [viewMode, setViewMode] = useState('gsc'); // 'gsc', 'ga4', 'combined'
+  const [ga4PropertyId, setGa4PropertyId] = useState('');
 
   const API_URL = 'https://seo-engine.onrender.com';
 
@@ -38,7 +51,6 @@ function App() {
         loadSites();
       })
       .catch(err => {
-        setError(err.message);
         setLoading(false);
       });
   }, []);
@@ -116,6 +128,7 @@ function App() {
           if (selectedSiteId === siteId) {
             setSelectedSiteId(null);
             setGscData(null);
+            setGa4Data(null);
             setIssues([]);
           }
         } else {
@@ -131,45 +144,97 @@ function App() {
     fetch(`${API_URL}/api/fetch-gsc-data`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ site_id: siteId })
+      body: JSON.stringify({ site_id: siteId, days: dateRange })
     })
       .then(res => res.json())
       .then(data => {
         setFetchingStates(prev => ({ ...prev, [siteId]: false }));
         
         if (data.success) {
-          alert(`${data.message}\n\n💡 Tip: Click "View Data" to see results and AI suggestions.`);
+          alert(`${data.message}\n\nDate Range: ${data.date_range}\n\n💡 Tip: Click "View GSC Data" to see results.`);
           loadSites();
           loadGSCData(siteId);
-          loadIssues(siteId);
         } else if (data.error) {
           let errorMsg = `❌ ${data.error}`;
           if (data.solution) {
             errorMsg += `\n\n💡 Solution:\n${data.solution}`;
-          }
-          if (data.tried_url) {
-            errorMsg += `\n\n🔍 Tried to fetch: ${data.tried_url}`;
           }
           alert(errorMsg);
         }
       })
       .catch(err => {
         setFetchingStates(prev => ({ ...prev, [siteId]: false }));
-        alert(`Error: ${err.message}\n\n💡 Try:\n1. Check your internet connection\n2. Reconnect Google account\n3. Verify domain is in GSC`);
+        alert(`Error: ${err.message}\n\n💡 Try:\n1. Check your internet connection\n2. Reconnect Google account`);
       });
   };
 
-  const loadGSCData = (siteId) => {
-    setSelectedSiteId(siteId);
+  const handleFetchGA4Data = (siteId) => {
+    if (!ga4PropertyId) {
+      alert('Please enter your GA4 Property ID first (found in GA4 Admin → Property → Property Details)');
+      return;
+    }
     
-    fetch(`${API_URL}/api/gsc-data/${siteId}`)
+    setFetchingStates(prev => ({ ...prev, [`ga4_${siteId}`]: true }));
+    
+    fetch(`${API_URL}/api/fetch-ga4-data`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        site_id: siteId, 
+        property_id: ga4PropertyId,
+        days: dateRange 
+      })
+    })
+      .then(res => res.json())
+      .then(data => {
+        setFetchingStates(prev => ({ ...prev, [`ga4_${siteId}`]: false }));
+        
+        if (data.success) {
+          alert(`${data.message}\n\nDate Range: ${data.date_range}`);
+          loadGA4Data(siteId);
+        } else {
+          alert('Error: ' + (data.error || 'Unknown error'));
+        }
+      })
+      .catch(err => {
+        setFetchingStates(prev => ({ ...prev, [`ga4_${siteId}`]: false }));
+        alert('Error: ' + err.message);
+      });
+  };
+
+  const loadGSCData = (siteId, page = 1) => {
+    setSelectedSiteId(siteId);
+    setCurrentPage(page);
+    
+    let url = `${API_URL}/api/gsc-data/${siteId}?page=${page}&per_page=${perPage}`;
+    
+    if (deviceFilter) url += `&filter_device=${deviceFilter}`;
+    if (countryFilter) url += `&filter_country=${countryFilter}`;
+    if (customStartDate) url += `&start_date=${customStartDate}`;
+    if (customEndDate) url += `&end_date=${customEndDate}`;
+    
+    fetch(url)
       .then(res => res.json())
       .then(data => {
         if (data.pages) {
           setGscData(data);
+          setTotalPages(data.total_pages || 1);
         }
       })
       .catch(err => console.error('Error loading GSC data:', err));
+  };
+
+  const loadGA4Data = (siteId, page = 1) => {
+    setSelectedSiteId(siteId);
+    
+    fetch(`${API_URL}/api/ga4-data/${siteId}?page=${page}&per_page=${perPage}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.pages) {
+          setGa4Data(data);
+        }
+      })
+      .catch(err => console.error('Error loading GA4 data:', err));
   };
 
   const loadIssues = (siteId) => {
@@ -183,32 +248,36 @@ function App() {
       })
       .catch(err => console.error('Error loading issues:', err));
   };
-const handleAIAnalysis = (siteId, pageUrl) => {
-  setLoading(true);
-  
-  fetch(`${API_URL}/api/analyze-competitors`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ 
-      site_id: siteId, 
-      page_url: pageUrl 
+
+  const handleDeepAIAnalysis = (siteId, pageUrl) => {
+    // Use per-page loading state
+    setAnalyzingPages(prev => ({ ...prev, [pageUrl]: true }));
+    
+    fetch(`${API_URL}/api/analyze-page-deep`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        site_id: siteId, 
+        page_url: pageUrl 
+      })
     })
-  })
-    .then(res => res.json())
-    .then(data => {
-      setLoading(false);
-      if (data.success) {
-        alert(`🤖 AI Analysis Complete!\n\n${data.suggestions}\n\nCheck "View AI Suggestions" for full details.`);
-        loadIssues(siteId);
-      } else {
-        alert('Error: ' + (data.error || 'Unknown error'));
-      }
-    })
-    .catch(err => {
-      setLoading(false);
-      alert('Error: ' + err.message);
-    });
-};
+      .then(res => res.json())
+      .then(data => {
+        setAnalyzingPages(prev => ({ ...prev, [pageUrl]: false }));
+        
+        if (data.success) {
+          alert(`🤖 Deep AI Analysis Complete!\n\n✅ GSC queries analyzed: ${data.gsc_data?.length || 0}\n✅ GA4 data: ${data.ga4_data ? 'Available' : 'Not available'}\n✅ Competitors analyzed: ${data.competitor_count}\n\n📋 Check "View AI Suggestions" for detailed report.`);
+          loadIssues(siteId);
+        } else {
+          alert('Error: ' + (data.error || 'Unknown error'));
+        }
+      })
+      .catch(err => {
+        setAnalyzingPages(prev => ({ ...prev, [pageUrl]: false }));
+        alert('Error: ' + err.message);
+      });
+  };
+
   const handleExportData = (siteId) => {
     fetch(`${API_URL}/api/export-gsc-data/${siteId}`)
       .then(res => res.json())
@@ -259,6 +328,48 @@ const handleAIAnalysis = (siteId, pageUrl) => {
     );
   };
 
+  const renderPagination = () => {
+    if (totalPages <= 1) return null;
+    
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '10px', marginTop: '20px', flexWrap: 'wrap' }}>
+        <button
+          onClick={() => loadGSCData(selectedSiteId, 1)}
+          disabled={currentPage === 1}
+          style={{ padding: '8px 16px', border: '1px solid #dee2e6', borderRadius: '6px', cursor: currentPage === 1 ? 'not-allowed' : 'pointer', background: currentPage === 1 ? '#e9ecef' : 'white' }}
+        >
+          First
+        </button>
+        <button
+          onClick={() => loadGSCData(selectedSiteId, currentPage - 1)}
+          disabled={currentPage === 1}
+          style={{ padding: '8px 16px', border: '1px solid #dee2e6', borderRadius: '6px', cursor: currentPage === 1 ? 'not-allowed' : 'pointer', background: currentPage === 1 ? '#e9ecef' : 'white' }}
+        >
+          Previous
+        </button>
+        
+        <span style={{ padding: '8px 16px', fontWeight: 'bold' }}>
+          Page {currentPage} of {totalPages}
+        </span>
+        
+        <button
+          onClick={() => loadGSCData(selectedSiteId, currentPage + 1)}
+          disabled={currentPage === totalPages}
+          style={{ padding: '8px 16px', border: '1px solid #dee2e6', borderRadius: '6px', cursor: currentPage === totalPages ? 'not-allowed' : 'pointer', background: currentPage === totalPages ? '#e9ecef' : 'white' }}
+        >
+          Next
+        </button>
+        <button
+          onClick={() => loadGSCData(selectedSiteId, totalPages)}
+          disabled={currentPage === totalPages}
+          style={{ padding: '8px 16px', border: '1px solid #dee2e6', borderRadius: '6px', cursor: currentPage === totalPages ? 'not-allowed' : 'pointer', background: currentPage === totalPages ? '#e9ecef' : 'white' }}
+        >
+          Last
+        </button>
+      </div>
+    );
+  };
+
   if (loading && !backendStatus) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f5f5' }}>
@@ -273,13 +384,14 @@ const handleAIAnalysis = (siteId, pageUrl) => {
   return (
     <div style={{ minHeight: '100vh', background: '#f5f5f5' }}>
       <header style={{ background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', color: 'white', padding: '20px', boxShadow: '0 2px 10px rgba(0,0,0,0.1)' }}>
-        <div style={{ maxWidth: '1200px', margin: '0 auto' }}>
-          <h1 style={{ margin: 0, fontSize: '32px' }}>🚀 SEO Engine</h1>
-          <p style={{ margin: '5px 0 0 0', opacity: 0.9 }}>AI-Powered SEO Diagnostic & Auto-Fix Tool</p>
+        <div style={{ maxWidth: '1400px', margin: '0 auto' }}>
+          <h1 style={{ margin: 0, fontSize: '32px' }}>🚀 SEO Engine Pro</h1>
+          <p style={{ margin: '5px 0 0 0', opacity: 0.9 }}>AI-Powered SEO Analysis • GSC + GA4 Integration • Competitor Intelligence</p>
         </div>
       </header>
 
-      <main style={{ padding: '40px 20px', maxWidth: '1200px', margin: '0 auto' }}>
+      <main style={{ padding: '40px 20px', maxWidth: '1400px', margin: '0 auto' }}>
+        {/* System Status */}
         <div style={{ 
           background: backendStatus ? 'linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%)' : '#f8d7da', 
           border: `2px solid ${backendStatus ? '#28a745' : '#dc3545'}`, 
@@ -291,21 +403,21 @@ const handleAIAnalysis = (siteId, pageUrl) => {
           <h2 style={{ marginTop: 0, display: 'flex', alignItems: 'center' }}>
             {backendStatus ? '✅' : '❌'} System Status
           </h2>
-          {backendStatus ? (
+          {backendStatus && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
               <div><strong>Database:</strong> {backendStatus.services?.database}</div>
               <div><strong>OAuth:</strong> {backendStatus.services?.oauth}</div>
-              <div><strong>Status:</strong> All systems operational</div>
+              <div><strong>AI Engine:</strong> {backendStatus.services?.ai}</div>
+              <div><strong>Serper API:</strong> {backendStatus.services?.serper}</div>
             </div>
-          ) : (
-            <p>❌ Cannot connect to backend. Please check your internet connection.</p>
           )}
         </div>
 
+        {/* Step 1: Connect Google */}
         <div style={{ background: 'white', border: '2px solid #e0e0e0', padding: '30px', borderRadius: '12px', marginBottom: '30px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
-          <h2 style={{ marginTop: 0 }}>📊 Step 1: Connect Google Search Console</h2>
+          <h2 style={{ marginTop: 0 }}>📊 Step 1: Connect Google (GSC + GA4)</h2>
           <p style={{ color: '#666', marginBottom: '20px' }}>
-            Connect your Google account to access Search Console data. <strong>Any Google account can connect!</strong>
+            Connect your Google account to access <strong>Search Console</strong> and <strong>Google Analytics 4</strong> data.
           </p>
           <button 
             onClick={handleConnectGoogle} 
@@ -325,6 +437,7 @@ const handleAIAnalysis = (siteId, pageUrl) => {
           </button>
         </div>
 
+        {/* Step 2: Your Websites */}
         <div style={{ background: 'white', border: '2px solid #e0e0e0', padding: '30px', borderRadius: '12px', marginBottom: '30px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '10px' }}>
             <h2 style={{ margin: 0 }}>🌐 Step 2: Your Websites ({sites.length})</h2>
@@ -353,15 +466,12 @@ const handleAIAnalysis = (siteId, pageUrl) => {
                 </label>
                 <input
                   type="text"
-                  placeholder="example.com (without http://)"
+                  placeholder="example.com"
                   value={newSite.domain}
                   onChange={(e) => setNewSite({...newSite, domain: e.target.value})}
                   style={{ width: '100%', padding: '12px', border: '2px solid #ced4da', borderRadius: '8px', fontSize: '15px' }}
                   required
                 />
-                <p style={{ fontSize: '12px', color: '#666', marginTop: '5px' }}>
-                  💡 Enter just the domain, e.g., "example.com"
-                </p>
               </div>
               <div style={{ marginBottom: '20px' }}>
                 <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold', color: '#333' }}>
@@ -375,32 +485,19 @@ const handleAIAnalysis = (siteId, pageUrl) => {
                   style={{ width: '100%', padding: '12px', border: '2px solid #ced4da', borderRadius: '8px', fontSize: '15px' }}
                   required
                 />
-                <p style={{ fontSize: '12px', color: '#666', marginTop: '5px' }}>
-                  💡 Usually at /sitemap.xml
-                </p>
               </div>
-              <div style={{ display: 'flex', gap: '10px' }}>
-                <button 
-                  type="submit" 
-                  style={{ background: '#007bff', color: 'white', padding: '12px 24px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', flex: 1 }}
-                >
-                  ✅ Add Site
-                </button>
-                <button 
-                  type="button" 
-                  onClick={() => setShowAddSite(false)} 
-                  style={{ background: '#6c757d', color: 'white', padding: '12px 24px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', flex: 1 }}
-                >
-                  Cancel
-                </button>
-              </div>
+              <button 
+                type="submit" 
+                style={{ background: '#007bff', color: 'white', padding: '12px 24px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', width: '100%' }}
+              >
+                ✅ Add Site
+              </button>
             </form>
           )}
 
           {sites.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '40px', color: '#666' }}>
-              <p style={{ fontSize: '18px', marginBottom: '10px' }}>📝 No websites added yet</p>
-              <p>Click "+ Add Website" to get started!</p>
+              <p style={{ fontSize: '18px' }}>📝 No websites added yet. Click "+ Add Website" to get started!</p>
             </div>
           ) : (
             <div style={{ display: 'grid', gap: '15px' }}>
@@ -414,56 +511,369 @@ const handleAIAnalysis = (siteId, pageUrl) => {
                     border: '2px solid #dee2e6'
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '15px' }}>
-                    <div style={{ flex: 1, minWidth: '200px' }}>
-                      <h3 style={{ margin: '0 0 8px 0', color: '#333', fontSize: '20px' }}>
-                        🌐 {site.domain}
-                      </h3>
-                      <p style={{ margin: '0 0 5px 0', fontSize: '13px', color: '#666' }}>
-                        📄 {site.sitemap_url}
-                      </p>
-                      {site.last_scan_at && (
-                        <p style={{ margin: '5px 0 0 0', fontSize: '12px', color: '#28a745', fontWeight: 'bold' }}>
-                          ✅ Last scanned: {new Date(site.last_scan_at).toLocaleString()}
-                        </p>
-                      )}
+                  <div style={{ marginBottom: '15px' }}>
+                    <h3 style={{ marginTop: 0, marginBottom: '15px' }}>🔍 Filters</h3>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '5px', fontSize: '13px', fontWeight: 'bold' }}>Device:</label>
+                      <select
+                        value={deviceFilter}
+                        onChange={(e) => setDeviceFilter(e.target.value)}
+                        style={{ width: '100%', padding: '8px', border: '1px solid #ced4da', borderRadius: '6px' }}
+                      >
+                        <option value="">All Devices</option>
+                        <option value="DESKTOP">Desktop</option>
+                        <option value="MOBILE">Mobile</option>
+                        <option value="TABLET">Tablet</option>
+                      </select>
                     </div>
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
-                      <button 
-                        onClick={() => handleFetchGSCData(site.id)} 
-                        disabled={fetchingStates[site.id]} 
+                    
+                    <div>
+                      <label style={{ display: 'block', marginBottom: '5px', fontSize: '13px', fontWeight: 'bold' }}>Country:</label>
+                      <input
+                        type="text"
+                        placeholder="e.g., usa, ind, gbr"
+                        value={countryFilter}
+                        onChange={(e) => setCountryFilter(e.target.value)}
+                        style={{ width: '100%', padding: '8px', border: '1px solid #ced4da', borderRadius: '6px' }}
+                      />
+                    </div>
+                    
+                    <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+                      <button
+                        onClick={() => loadGSCData(selectedSiteId, 1)}
                         style={{ 
-                          background: fetchingStates[site.id] ? '#ccc' : '#17a2b8', 
+                          background: '#007bff', 
                           color: 'white', 
                           padding: '10px 20px', 
                           border: 'none', 
-                          borderRadius: '8px', 
-                          cursor: fetchingStates[site.id] ? 'not-allowed' : 'pointer',
+                          borderRadius: '6px', 
+                          cursor: 'pointer',
                           fontWeight: 'bold',
-                          fontSize: '14px'
+                          width: '100%'
                         }}
                       >
-                        {fetchingStates[site.id] ? '⏳ Fetching...' : '📊 Fetch Data'}
-                      </button>
-                      <button 
-                        onClick={() => loadGSCData(site.id)} 
-                        style={{ background: '#ffc107', color: '#000', padding: '10px 20px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px' }}
-                      >
-                        📈 View Data
-                      </button>
-                      <button 
-                        onClick={() => handleExportData(site.id)} 
-                        style={{ background: '#6f42c1', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px' }}
-                      >
-                        💾 Export CSV
-                      </button>
-                      <button 
-                        onClick={() => handleDeleteSite(site.id, site.domain)} 
-                        style={{ background: '#dc3545', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px' }}
-                      >
-                        🗑️ Delete
+                        Apply Filters
                       </button>
                     </div>
+                  </div>
+                </div>
+
+                {/* GSC Data Table */}
+                <div style={{ marginBottom: '20px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', flexWrap: 'wrap', gap: '10px' }}>
+                    <h3 style={{ margin: 0 }}>
+                      📊 Search Performance ({gscData.total?.toLocaleString() || 0} total pages)
+                    </h3>
+                    <button
+                      onClick={() => {
+                        setGscData(null);
+                        setGa4Data(null);
+                        setSelectedSiteId(null);
+                      }}
+                      style={{ background: '#6c757d', color: 'white', padding: '8px 16px', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+                    >
+                      Close
+                    </button>
+                  </div>
+                  
+                  <div style={{ overflowX: 'auto', borderRadius: '8px', border: '1px solid #dee2e6' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', background: 'white', fontSize: '13px' }}>
+                      <thead>
+                        <tr style={{ background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', color: 'white' }}>
+                          <th style={{ padding: '12px', textAlign: 'left', fontWeight: 'bold' }}>URL</th>
+                          <th style={{ padding: '12px', textAlign: 'left', fontWeight: 'bold' }}>Query</th>
+                          <th style={{ padding: '12px', textAlign: 'center', fontWeight: 'bold' }}>Country</th>
+                          <th style={{ padding: '12px', textAlign: 'center', fontWeight: 'bold' }}>Device</th>
+                          <th style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold' }}>Impressions</th>
+                          <th style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold' }}>Clicks</th>
+                          <th style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold' }}>CTR</th>
+                          <th style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold' }}>Position</th>
+                          <th style={{ padding: '12px', textAlign: 'center', fontWeight: 'bold' }}>AI Analysis</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {gscData.pages.map((page, idx) => (
+                          <tr key={idx} style={{ borderBottom: '1px solid #dee2e6', background: idx % 2 === 0 ? '#fff' : '#f8f9fa' }}>
+                            <td style={{ padding: '10px', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={page.url}>
+                              {page.url}
+                            </td>
+                            <td style={{ padding: '10px', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={page.query}>
+                              {page.query}
+                            </td>
+                            <td style={{ padding: '10px', textAlign: 'center', textTransform: 'uppercase', fontSize: '11px', fontWeight: 'bold' }}>
+                              {page.country}
+                            </td>
+                            <td style={{ padding: '10px', textAlign: 'center', fontSize: '11px' }}>
+                              {page.device}
+                            </td>
+                            <td style={{ padding: '10px', textAlign: 'right', fontWeight: 'bold', color: '#007bff' }}>
+                              {page.impressions.toLocaleString()}
+                            </td>
+                            <td style={{ padding: '10px', textAlign: 'right', fontWeight: 'bold', color: '#28a745' }}>
+                              {page.clicks}
+                            </td>
+                            <td style={{ padding: '10px', textAlign: 'right', fontWeight: 'bold', color: (page.ctr * 100) < 2 ? '#dc3545' : '#17a2b8' }}>
+                              {(page.ctr * 100).toFixed(2)}%
+                            </td>
+                            <td style={{ padding: '10px', textAlign: 'right', fontWeight: 'bold', color: page.position > 10 ? '#dc3545' : '#28a745' }}>
+                              {page.position.toFixed(1)}
+                            </td>
+                            <td style={{ padding: '10px', textAlign: 'center' }}>
+                              <button 
+                                onClick={() => handleDeepAIAnalysis(selectedSiteId, page.url)}
+                                disabled={analyzingPages[page.url]}
+                                style={{ 
+                                  background: analyzingPages[page.url] ? '#ccc' : '#9c27b0', 
+                                  color: 'white', 
+                                  padding: '6px 12px', 
+                                  border: 'none', 
+                                  borderRadius: '6px', 
+                                  cursor: analyzingPages[page.url] ? 'not-allowed' : 'pointer',
+                                  fontSize: '12px',
+                                  fontWeight: 'bold',
+                                  whiteSpace: 'nowrap'
+                                }}
+                              >
+                                {analyzingPages[page.url] ? '⏳ Analyzing...' : '🤖 Deep Analysis'}
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  
+                  {renderPagination()}
+                  
+                  <div style={{ marginTop: '20px', padding: '15px', background: '#e7f3ff', borderRadius: '8px', border: '1px solid #2196f3' }}>
+                    <p style={{ margin: 0, color: '#0d47a1', fontSize: '13px' }}>
+                      💡 <strong>Tip:</strong> Click "🤖 Deep Analysis" on any page to get comprehensive SEO insights including GSC metrics, GA4 behavior data, competitor analysis, and actionable recommendations.
+                    </p>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {/* GA4 Data Table */}
+            {viewMode === 'ga4' && ga4Data && (
+              <>
+                <div style={{ marginBottom: '20px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', flexWrap: 'wrap', gap: '10px' }}>
+                    <h3 style={{ margin: 0 }}>
+                      📈 Google Analytics 4 Data ({ga4Data.count} pages)
+                    </h3>
+                  </div>
+                  
+                  <div style={{ overflowX: 'auto', borderRadius: '8px', border: '1px solid #dee2e6' }}>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', background: 'white', fontSize: '13px' }}>
+                      <thead>
+                        <tr style={{ background: 'linear-gradient(135deg, #9c27b0 0%, #673ab7 100%)', color: 'white' }}>
+                          <th style={{ padding: '12px', textAlign: 'left', fontWeight: 'bold' }}>Page Path</th>
+                          <th style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold' }}>Sessions</th>
+                          <th style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold' }}>Users</th>
+                          <th style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold' }}>Pageviews</th>
+                          <th style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold' }}>Avg Duration</th>
+                          <th style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold' }}>Bounce Rate</th>
+                          <th style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold' }}>Conversions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {ga4Data.pages.map((page, idx) => (
+                          <tr key={idx} style={{ borderBottom: '1px solid #dee2e6', background: idx % 2 === 0 ? '#fff' : '#f8f9fa' }}>
+                            <td style={{ padding: '10px', maxWidth: '400px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={page.page_path}>
+                              {page.page_path}
+                            </td>
+                            <td style={{ padding: '10px', textAlign: 'right', fontWeight: 'bold', color: '#9c27b0' }}>
+                              {page.sessions.toLocaleString()}
+                            </td>
+                            <td style={{ padding: '10px', textAlign: 'right', fontWeight: 'bold', color: '#673ab7' }}>
+                              {page.users.toLocaleString()}
+                            </td>
+                            <td style={{ padding: '10px', textAlign: 'right', fontWeight: 'bold' }}>
+                              {page.pageviews.toLocaleString()}
+                            </td>
+                            <td style={{ padding: '10px', textAlign: 'right', fontWeight: 'bold', color: page.avg_duration < 30 ? '#dc3545' : '#28a745' }}>
+                              {page.avg_duration.toFixed(0)}s
+                            </td>
+                            <td style={{ padding: '10px', textAlign: 'right', fontWeight: 'bold', color: page.bounce_rate > 70 ? '#dc3545' : page.bounce_rate > 50 ? '#ffc107' : '#28a745' }}>
+                              {page.bounce_rate.toFixed(1)}%
+                            </td>
+                            <td style={{ padding: '10px', textAlign: 'right', fontWeight: 'bold', color: page.conversions > 0 ? '#28a745' : '#dc3545' }}>
+                              {page.conversions.toFixed(0)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  
+                  <div style={{ marginTop: '20px', padding: '15px', background: '#f3e5f5', borderRadius: '8px', border: '1px solid #9c27b0' }}>
+                    <p style={{ margin: 0, color: '#4a148c', fontSize: '13px' }}>
+                      💡 <strong>Understanding GA4 Metrics:</strong>
+                    </p>
+                    <ul style={{ margin: '10px 0 0 20px', color: '#4a148c', fontSize: '12px', lineHeight: '1.8' }}>
+                      <li><strong>Sessions:</strong> Number of visits to your site</li>
+                      <li><strong>Bounce Rate:</strong> % of single-page sessions (lower is better)</li>
+                      <li><strong>Avg Duration:</strong> Time users spend on the page (higher is better)</li>
+                      <li><strong>Conversions:</strong> Goal completions (purchases, signups, etc.)</li>
+                    </ul>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </main>
+
+      <footer style={{ textAlign: 'center', padding: '30px 20px', marginTop: '40px', borderTop: '2px solid #dee2e6', background: 'white' }}>
+        <p style={{ color: '#666', margin: '0 0 10px 0', fontSize: '14px' }}>
+          <strong>SEO Engine Pro v2.0</strong> | React + FastAPI + AI + GSC + GA4
+        </p>
+        <p style={{ color: '#999', margin: 0, fontSize: '12px' }}>
+          🚀 Free forever | 🔒 Secure | 🤖 AI-powered SEO Expert | 📊 Complete Analytics
+        </p>
+      </footer>
+    </div>
+  );
+}
+
+export default App;style={{ margin: '0 0 8px 0', color: '#333', fontSize: '20px' }}>
+                      🌐 {site.domain}
+                    </h3>
+                    {site.last_scan_at && (
+                      <p style={{ margin: '5px 0 0 0', fontSize: '12px', color: '#28a745', fontWeight: 'bold' }}>
+                        ✅ Last scanned: {new Date(site.last_scan_at).toLocaleString()}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Date Range Selector */}
+                  <div style={{ background: 'white', padding: '15px', borderRadius: '8px', marginBottom: '15px', border: '1px solid #dee2e6' }}>
+                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>📅 Date Range:</label>
+                    <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '10px' }}>
+                      {[7, 30, 90, 180].map(days => (
+                        <button
+                          key={days}
+                          onClick={() => setDateRange(days)}
+                          style={{
+                            padding: '8px 16px',
+                            border: dateRange === days ? '2px solid #007bff' : '1px solid #dee2e6',
+                            borderRadius: '6px',
+                            background: dateRange === days ? '#007bff' : 'white',
+                            color: dateRange === days ? 'white' : '#333',
+                            cursor: 'pointer',
+                            fontWeight: dateRange === days ? 'bold' : 'normal'
+                          }}
+                        >
+                          {days} days
+                        </button>
+                      ))}
+                    </div>
+                    
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginTop: '10px' }}>
+                      <div>
+                        <label style={{ fontSize: '12px', display: 'block', marginBottom: '5px' }}>Custom Start:</label>
+                        <input
+                          type="date"
+                          value={customStartDate}
+                          onChange={(e) => setCustomStartDate(e.target.value)}
+                          style={{ width: '100%', padding: '8px', border: '1px solid #ced4da', borderRadius: '6px' }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: '12px', display: 'block', marginBottom: '5px' }}>Custom End:</label>
+                        <input
+                          type="date"
+                          value={customEndDate}
+                          onChange={(e) => setCustomEndDate(e.target.value)}
+                          style={{ width: '100%', padding: '8px', border: '1px solid #ced4da', borderRadius: '6px' }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* GA4 Property ID */}
+                  <div style={{ background: 'white', padding: '15px', borderRadius: '8px', marginBottom: '15px', border: '1px solid #dee2e6' }}>
+                    <label style={{ display: 'block', marginBottom: '8px', fontWeight: 'bold' }}>📊 GA4 Property ID (optional):</label>
+                    <input
+                      type="text"
+                      placeholder="123456789"
+                      value={ga4PropertyId}
+                      onChange={(e) => setGa4PropertyId(e.target.value)}
+                      style={{ width: '100%', padding: '10px', border: '1px solid #ced4da', borderRadius: '6px' }}
+                    />
+                    <p style={{ fontSize: '11px', color: '#666', margin: '5px 0 0 0' }}>
+                      Find in GA4: Admin → Property → Property Details
+                    </p>
+                  </div>
+
+                  {/* Action Buttons */}
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px' }}>
+                    <button 
+                      onClick={() => handleFetchGSCData(site.id)} 
+                      disabled={fetchingStates[site.id]} 
+                      style={{ 
+                        background: fetchingStates[site.id] ? '#ccc' : '#17a2b8', 
+                        color: 'white', 
+                        padding: '10px 20px', 
+                        border: 'none', 
+                        borderRadius: '8px', 
+                        cursor: fetchingStates[site.id] ? 'not-allowed' : 'pointer',
+                        fontWeight: 'bold',
+                        fontSize: '14px'
+                      }}
+                    >
+                      {fetchingStates[site.id] ? '⏳ Fetching GSC...' : '📊 Fetch GSC Data'}
+                    </button>
+                    
+                    <button 
+                      onClick={() => handleFetchGA4Data(site.id)} 
+                      disabled={fetchingStates[`ga4_${site.id}`]} 
+                      style={{ 
+                        background: fetchingStates[`ga4_${site.id}`] ? '#ccc' : '#9c27b0', 
+                        color: 'white', 
+                        padding: '10px 20px', 
+                        border: 'none', 
+                        borderRadius: '8px', 
+                        cursor: fetchingStates[`ga4_${site.id}`] ? 'not-allowed' : 'pointer',
+                        fontWeight: 'bold',
+                        fontSize: '14px'
+                      }}
+                    >
+                      {fetchingStates[`ga4_${site.id}`] ? '⏳ Fetching GA4...' : '📊 Fetch GA4 Data'}
+                    </button>
+                    
+                    <button 
+                      onClick={() => {
+                        loadGSCData(site.id);
+                        loadGA4Data(site.id);
+                      }} 
+                      style={{ background: '#ffc107', color: '#000', padding: '10px 20px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px' }}
+                    >
+                      📈 View Data
+                    </button>
+                    
+                    <button 
+                      onClick={() => loadIssues(site.id)}
+                      style={{ background: '#fd7e14', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px' }}
+                    >
+                      🤖 View AI Insights
+                    </button>
+                    
+                    <button 
+                      onClick={() => handleExportData(site.id)} 
+                      style={{ background: '#6f42c1', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px' }}
+                    >
+                      💾 Export CSV
+                    </button>
+                    
+                    <button 
+                      onClick={() => handleDeleteSite(site.id, site.domain)} 
+                      style={{ background: '#dc3545', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '14px' }}
+                    >
+                      🗑️ Delete
+                    </button>
                   </div>
                 </div>
               ))}
@@ -471,10 +881,11 @@ const handleAIAnalysis = (siteId, pageUrl) => {
           )}
         </div>
 
+        {/* AI Diagnostics / Issues */}
         {issues.length > 0 && showIssues && (
           <div style={{ background: 'white', border: '2px solid #e0e0e0', padding: '30px', borderRadius: '12px', marginBottom: '30px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
-              <h2 style={{ margin: 0 }}>🤖 AI Diagnostics ({issues.length} issues found)</h2>
+              <h2 style={{ margin: 0 }}>🤖 AI SEO Expert Analysis ({issues.length} insights)</h2>
               <button 
                 onClick={() => setShowIssues(false)}
                 style={{ background: '#6c757d', color: 'white', padding: '8px 16px', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
@@ -483,53 +894,51 @@ const handleAIAnalysis = (siteId, pageUrl) => {
               </button>
             </div>
             
-            <div style={{ display: 'grid', gap: '15px' }}>
+            <div style={{ display: 'grid', gap: '20px' }}>
               {issues.map((issue, idx) => (
                 <div 
                   key={issue.id || idx} 
                   style={{ 
                     border: `2px solid ${getSeverityColor(issue.severity)}`, 
                     borderLeft: `8px solid ${getSeverityColor(issue.severity)}`,
-                    padding: '20px', 
+                    padding: '25px', 
                     borderRadius: '10px',
                     background: 'linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%)'
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '10px', flexWrap: 'wrap', gap: '10px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '15px', flexWrap: 'wrap', gap: '10px' }}>
                     <div>
-                      <h3 style={{ margin: '0 0 8px 0', color: '#333', textTransform: 'capitalize' }}>
+                      <h3 style={{ margin: '0 0 10px 0', color: '#333', textTransform: 'capitalize', fontSize: '18px' }}>
                         {issue.type.replace(/_/g, ' ')}
                       </h3>
                       {getSeverityBadge(issue.severity)}
                     </div>
+                    <span style={{ fontSize: '12px', color: '#666' }}>
+                      {issue.created_at ? new Date(issue.created_at).toLocaleString() : ''}
+                    </span>
                   </div>
                   
-                  <p style={{ margin: '10px 0', color: '#555', lineHeight: '1.6' }}>
-                    <strong>Issue:</strong> {issue.description}
+                  <p style={{ margin: '15px 0', color: '#555', lineHeight: '1.6', fontWeight: 'bold' }}>
+                    {issue.description}
                   </p>
                   
                   <div style={{ 
-                    background: '#e7f3ff', 
+                    background: '#f0f8ff', 
                     border: '2px solid #2196f3', 
                     borderRadius: '8px', 
-                    padding: '15px', 
+                    padding: '20px', 
                     marginTop: '15px'
                   }}>
-                    <p style={{ margin: 0, color: '#0d47a1', lineHeight: '1.8', whiteSpace: 'pre-wrap' }}>
+                    <pre style={{ 
+                      margin: 0, 
+                      color: '#0d47a1', 
+                      lineHeight: '1.8', 
+                      whiteSpace: 'pre-wrap',
+                      fontFamily: 'inherit',
+                      fontSize: '14px'
+                    }}>
                       {issue.suggestion}
-                    </p>
-                  </div>
-                  
-                  <div style={{ marginTop: '15px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-                    <button style={{ background: '#28a745', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
-                      ✅ Apply AI Fix
-                    </button>
-                    <button style={{ background: '#007bff', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
-                      📝 Generate Meta Tags
-                    </button>
-                    <button style={{ background: '#6c757d', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
-                      ⏭️ Skip
-                    </button>
+                    </pre>
                   </div>
                 </div>
               ))}
@@ -537,99 +946,45 @@ const handleAIAnalysis = (siteId, pageUrl) => {
           </div>
         )}
 
-        {gscData && gscData.count > 0 && (
+        {/* Data View Tabs */}
+        {(gscData || ga4Data) && selectedSiteId && (
           <div style={{ background: 'white', border: '2px solid #e0e0e0', padding: '30px', borderRadius: '12px', boxShadow: '0 4px 6px rgba(0,0,0,0.1)' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '10px' }}>
-              <h2 style={{ margin: 0 }}>📊 Search Console Data ({gscData.count} pages)</h2>
-              <div style={{ display: 'flex', gap: '10px' }}>
-                <button 
-                  onClick={() => loadIssues(selectedSiteId)}
-                  style={{ background: '#17a2b8', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold' }}
-                >
-                  🤖 View AI Suggestions
-                </button>
-                <button 
-                  onClick={() => setGscData(null)}
-                  style={{ background: '#6c757d', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '8px', cursor: 'pointer' }}
-                >
-                  Close
-                </button>
-              </div>
+            {/* Tabs */}
+            <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', borderBottom: '2px solid #dee2e6', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => setViewMode('gsc')}
+                style={{
+                  padding: '12px 24px',
+                  border: 'none',
+                  borderBottom: viewMode === 'gsc' ? '3px solid #007bff' : 'none',
+                  background: viewMode === 'gsc' ? '#e7f3ff' : 'transparent',
+                  color: viewMode === 'gsc' ? '#007bff' : '#666',
+                  cursor: 'pointer',
+                  fontWeight: 'bold',
+                  fontSize: '15px'
+                }}
+              >
+                📊 Google Search Console
+              </button>
+              <button
+                onClick={() => setViewMode('ga4')}
+                style={{
+                  padding: '12px 24px',
+                  border: 'none',
+                  borderBottom: viewMode === 'ga4' ? '3px solid #9c27b0' : 'none',
+                  background: viewMode === 'ga4' ? '#f3e5f5' : 'transparent',
+                  color: viewMode === 'ga4' ? '#9c27b0' : '#666',
+                  cursor: 'pointer',
+                  fontWeight: 'bold',
+                  fontSize: '15px'
+                }}
+              >
+                📈 Google Analytics 4
+              </button>
             </div>
-            
-            <div style={{ overflowX: 'auto', borderRadius: '8px', border: '1px solid #dee2e6' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse', background: 'white' }}>
-                <thead>
-                  <tr style={{ background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', color: 'white' }}>
-                    <th style={{ padding: '15px', textAlign: 'left', fontWeight: 'bold' }}>URL</th>
-                    <th style={{ padding: '15px', textAlign: 'right', fontWeight: 'bold' }}>Impressions</th>
-                    <th style={{ padding: '15px', textAlign: 'right', fontWeight: 'bold' }}>Clicks</th>
-                    <th style={{ padding: '15px', textAlign: 'right', fontWeight: 'bold' }}>CTR</th>
-                    <th style={{ padding: '15px', textAlign: 'right', fontWeight: 'bold' }}>Position</th>
-                    <th style={{ padding: '15px', textAlign: 'center', fontWeight: 'bold' }}>AI Analysis</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {gscData.pages.map((page, idx) => (
-                    <tr key={idx} style={{ borderBottom: '1px solid #dee2e6', background: idx % 2 === 0 ? '#fff' : '#f8f9fa' }}>
-                      <td style={{ padding: '12px', maxWidth: '400px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={page.url}>
-                        {page.url}
-                      </td>
-                      <td style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold', color: '#007bff' }}>
-                        {page.impressions.toLocaleString()}
-                      </td>
-                      <td style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold', color: '#28a745' }}>
-                        {page.clicks}
-                      </td>
-                      <td style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold', color: (page.ctr * 100) < 2 ? '#dc3545' : '#17a2b8' }}>
-                        {(page.ctr * 100).toFixed(2)}%
-                      </td>
-                      <td style={{ padding: '12px', textAlign: 'right', fontWeight: 'bold', color: page.position > 10 ? '#dc3545' : '#28a745' }}>
-                        {page.position.toFixed(1)}
-                      </td>
-                        <td style={{ padding: '12px', textAlign: 'center' }}>
-  <button 
-    onClick={() => handleAIAnalysis(selectedSiteId, page.url)}
-    disabled={loading}
-    style={{ 
-      background: loading ? '#ccc' : '#9c27b0', 
-      color: 'white', 
-      padding: '8px 16px', 
-      border: 'none', 
-      borderRadius: '6px', 
-      cursor: loading ? 'not-allowed' : 'pointer',
-      fontSize: '13px',
-      fontWeight: 'bold'
-    }}
-  >
-    {loading ? '⏳' : '🤖 AI Analyze'}
-  </button>
-</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            
-            <div style={{ marginTop: '20px', padding: '15px', background: '#e7f3ff', borderRadius: '8px', border: '1px solid #2196f3' }}>
-              <p style={{ margin: 0, color: '#0d47a1' }}>
-                💡 <strong>Quick Stats:</strong> Showing top {gscData.count} pages by impressions.
-              </p>
-            </div>
-          </div>
-        )}
-      </main>
 
-      <footer style={{ textAlign: 'center', padding: '30px 20px', marginTop: '40px', borderTop: '2px solid #dee2e6', background: 'white' }}>
-        <p style={{ color: '#666', margin: '0 0 10px 0', fontSize: '14px' }}>
-          <strong>SEO Engine v1.0</strong> | Built with React + FastAPI + AI
-        </p>
-        <p style={{ color: '#999', margin: 0, fontSize: '12px' }}>
-          🚀 Free forever | 🔒 Secure | 🤖 AI-powered
-        </p>
-      </footer>
-    </div>
-  );
-}
-
-export default App;
+            {/* Filters for GSC */}
+            {viewMode === 'gsc' && gscData && (
+              <>
+                <div style={{ background: '#f8f9fa', padding: '20px', borderRadius: '8px', marginBottom: '20px' }}>
+                  <h3 
