@@ -119,12 +119,12 @@ async def oauth_callback(code: str = None, state: str = None, error: str = None)
                     conn = psycopg2.connect(DATABASE_URL)
                     cur = conn.cursor()
                     
+                    # FIXED: Delete old connector first, then insert new one
+                    cur.execute("DELETE FROM connectors WHERE type = 'google'")
+                    
                     cur.execute("""
                         INSERT INTO connectors (site_id, type, credentials_meta, status)
                         VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (type) DO UPDATE SET 
-                            credentials_meta = EXCLUDED.credentials_meta,
-                            status = EXCLUDED.status
                         RETURNING id
                     """, (
                         None,
@@ -143,18 +143,24 @@ async def oauth_callback(code: str = None, state: str = None, error: str = None)
                     cur.close()
                     conn.close()
                     
+                    print(f"SUCCESS: Connector created with ID {connector_id}")
+                    
                     return RedirectResponse(url=f"https://seo-engine-gold.vercel.app/?oauth_success=true&connector_id={connector_id}")
                     
                 except Exception as db_error:
                     print(f"Database error: {db_error}")
-                    return RedirectResponse(url="https://seo-engine-gold.vercel.app/?oauth_success=true&db_warning=true")
+                    import traceback
+                    traceback.print_exc()
+                    return RedirectResponse(url="https://seo-engine-gold.vercel.app/?oauth_error=db_error")
             else:
-                return RedirectResponse(url="https://seo-engine-gold.vercel.app/?oauth_success=true")
+                print("ERROR: DATABASE_URL not configured")
+                return RedirectResponse(url="https://seo-engine-gold.vercel.app/?oauth_error=no_db")
             
     except Exception as e:
         print(f"OAuth error: {e}")
+        import traceback
+        traceback.print_exc()
         return RedirectResponse(url="https://seo-engine-gold.vercel.app/?oauth_error=exception")
-
 @app.post("/api/sites")
 async def create_site(site_data: dict):
     if not DATABASE_URL:
